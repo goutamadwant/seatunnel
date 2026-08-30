@@ -67,6 +67,23 @@ class HadoopFileSystemProxyTest {
     }
 
     @Test
+    void testHasAnyFileFindsNestedFileWithoutCollectingDirectoryContents() throws Exception {
+        HadoopFileSystemProxy proxy = new HadoopFileSystemProxy(new HadoopConf("file:///"));
+        java.nio.file.Path emptyDirectory = Files.createDirectories(tempDir.resolve("empty"));
+        java.nio.file.Path partitionDirectory =
+                Files.createDirectories(tempDir.resolve("warehouse/day=2026-08-30"));
+        Files.write(partitionDirectory.resolve("part-0.parquet"), new byte[] {1});
+        try {
+            Assertions.assertFalse(proxy.hasAnyFile(emptyDirectory.toString(), true));
+            Assertions.assertFalse(
+                    proxy.hasAnyFile(tempDir.resolve("warehouse").toString(), false));
+            Assertions.assertTrue(proxy.hasAnyFile(tempDir.resolve("warehouse").toString(), true));
+        } finally {
+            proxy.close();
+        }
+    }
+
+    @Test
     void testRenameTreatsExistingTargetAsCompletedRetry() throws Exception {
         HadoopFileSystemProxy proxy = new HadoopFileSystemProxy(new HadoopConf("file:///"));
         java.nio.file.Path source = tempDir.resolve("missing-source.bin");

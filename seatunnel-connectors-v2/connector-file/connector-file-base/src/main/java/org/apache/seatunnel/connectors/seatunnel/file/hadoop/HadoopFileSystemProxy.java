@@ -215,6 +215,16 @@ public class HadoopFileSystemProxy implements Serializable, Closeable {
                 });
     }
 
+    public boolean hasAnyFile(@NonNull String path, boolean recursive) throws IOException {
+        return execute(
+                () -> {
+                    Path fileName = new Path(path);
+                    FileSystem fileSystem = getFileSystem();
+                    return fileSystem.exists(fileName)
+                            && fileSystem.listFiles(fileName, recursive).hasNext();
+                });
+    }
+
     public List<Path> getAllSubFiles(@NonNull String filePath) throws IOException {
         return execute(
                 () -> {
