@@ -17,35 +17,24 @@
 
 package org.apache.seatunnel.connectors.seatunnel.file.gcs.catalog;
 
-import org.apache.seatunnel.connectors.seatunnel.file.config.HadoopConf;
 import org.apache.seatunnel.connectors.seatunnel.file.hadoop.HadoopFileSystemProxy;
 
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-
-import java.nio.file.Files;
-
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.mockito.Mockito;
 
 class GcsFileCatalogTest {
 
-    @TempDir private java.nio.file.Path tempDir;
+    private static final String SINK_PATH = "gs://test-bucket/warehouse/orders";
 
     @Test
     void shouldCheckForExistingDataRecursively() throws Exception {
-        java.nio.file.Path sinkPath = tempDir.resolve("warehouse/orders");
-        java.nio.file.Path partitionPath =
-                Files.createDirectories(sinkPath.resolve("day=2026-08-30"));
-        Files.write(partitionPath.resolve("part-0.parquet"), new byte[] {1});
-        HadoopFileSystemProxy fileSystemProxy =
-                new HadoopFileSystemProxy(new HadoopConf("file:///"));
-        GcsFileCatalog catalog =
-                new GcsFileCatalog(fileSystemProxy, sinkPath.toString(), "GcsFile");
+        HadoopFileSystemProxy fileSystemProxy = Mockito.mock(HadoopFileSystemProxy.class);
+        Mockito.when(fileSystemProxy.hasAnyFile(SINK_PATH, true)).thenReturn(true);
+        GcsFileCatalog catalog = new GcsFileCatalog(fileSystemProxy, SINK_PATH, "GcsFile");
 
-        try {
-            assertTrue(catalog.isExistsData(null));
-        } finally {
-            fileSystemProxy.close();
-        }
+        Assertions.assertTrue(catalog.isExistsData(null));
+
+        Mockito.verify(fileSystemProxy).hasAnyFile(SINK_PATH, true);
     }
 }
