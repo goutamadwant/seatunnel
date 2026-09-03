@@ -43,12 +43,16 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 public class MetadataTransformTest {
+
+    private static final String CONNECTOR_OFFSET = "KafkaOffset";
+    private static final String CONNECTOR_MESSAGE_ID = "MessageId";
 
     static CatalogTable catalogTable;
 
@@ -196,6 +200,162 @@ public class MetadataTransformTest {
     }
 
     @Test
+    void shouldProjectConnectorDeclaredMetadataFromRowOptions() {
+        List<Column> metadata = new ArrayList<>();
+        metadata.add(
+                MetadataColumn.of(
+                        CONNECTOR_OFFSET,
+                        BasicType.LONG_TYPE,
+                        20L,
+                        false,
+                        0L,
+                        "Kafka record offset"));
+        metadata.add(
+                MetadataColumn.of(
+                        CONNECTOR_MESSAGE_ID,
+                        BasicType.STRING_TYPE,
+                        128L,
+                        true,
+                        null,
+                        "Connector message identifier"));
+
+        Map<String, String> metadataMapping = new LinkedHashMap<>();
+        metadataMapping.put(CONNECTOR_OFFSET, "kafka_offset");
+        metadataMapping.put(CONNECTOR_MESSAGE_ID, "message_id");
+        MetadataTransform transform =
+                new MetadataTransform(
+                        metadataConfig(metadataMapping), connectorMetadataCatalogTable(metadata));
+        transform.initRowContainerGenerator();
+
+        Column[] columns = transform.getOutputColumns();
+        Assertions.assertEquals("kafka_offset", columns[0].getName());
+        Assertions.assertEquals(BasicType.LONG_TYPE, columns[0].getDataType());
+        Assertions.assertEquals(20L, columns[0].getColumnLength());
+        Assertions.assertFalse(columns[0].isNullable());
+        Assertions.assertEquals(0L, columns[0].getDefaultValue());
+        Assertions.assertEquals("Kafka record offset", columns[0].getComment());
+        Assertions.assertInstanceOf(PhysicalColumn.class, columns[0]);
+        Assertions.assertEquals("message_id", columns[1].getName());
+        Assertions.assertEquals(BasicType.STRING_TYPE, columns[1].getDataType());
+        Assertions.assertEquals(128L, columns[1].getColumnLength());
+        Assertions.assertTrue(columns[1].isNullable());
+        Assertions.assertEquals("Connector message identifier", columns[1].getComment());
+
+        SeaTunnelRow input = new SeaTunnelRow(new Object[] {"payload"});
+        input.getOptions().put(CONNECTOR_OFFSET, 42L);
+        input.getOptions().put(CONNECTOR_MESSAGE_ID, "message-1");
+
+        SeaTunnelRow output = transform.map(input);
+        Assertions.assertEquals(3, output.getArity());
+        Assertions.assertEquals("payload", output.getField(0));
+        Assertions.assertEquals(42L, output.getField(1));
+        Assertions.assertEquals("message-1", output.getField(2));
+    }
+
+    @Test
+    void shouldReturnNullWhenConnectorDeclaredMetadataValueIsAbsent() {
+        MetadataColumn metadataColumn =
+                MetadataColumn.of(
+                        CONNECTOR_MESSAGE_ID,
+                        BasicType.STRING_TYPE,
+                        128L,
+                        true,
+                        null,
+                        "Connector message identifier");
+        Map<String, String> metadataMapping = new LinkedHashMap<>();
+        metadataMapping.put(CONNECTOR_MESSAGE_ID, "message_id");
+        MetadataTransform transform =
+                new MetadataTransform(
+                        metadataConfig(metadataMapping),
+                        connectorMetadataCatalogTable(Collections.singletonList(metadataColumn)));
+        transform.initRowContainerGenerator();
+
+        SeaTunnelRow output = transform.map(new SeaTunnelRow(new Object[] {"payload"}));
+
+        Assertions.assertNull(output.getField(1));
+    }
+
+    @Test
+    void shouldRejectUndeclaredConnectorMetadata() {
+        Map<String, String> metadataMapping = new LinkedHashMap<>();
+        metadataMapping.put(CONNECTOR_OFFSET, "kafka_offset");
+
+        TransformException exception =
+                Assertions.assertThrows(
+                        TransformException.class,
+                        () ->
+                                new MetadataTransform(
+                                        metadataConfig(metadataMapping),
+                                        connectorMetadataCatalogTable(Collections.emptyList())));
+
+        Assertions.assertTrue(exception.getMessage().contains(CONNECTOR_OFFSET));
+    }
+
+    @Test
+    void shouldRejectConnectorMetadataKeyWithDifferentCase() {
+        MetadataColumn metadataColumn =
+                MetadataColumn.of(
+                        CONNECTOR_OFFSET, BasicType.LONG_TYPE, (Long) null, true, null, null);
+        String mismatchedKey = "kafkaoffset";
+        Map<String, String> metadataMapping = new LinkedHashMap<>();
+        metadataMapping.put(mismatchedKey, "kafka_offset");
+
+        TransformException exception =
+                Assertions.assertThrows(
+                        TransformException.class,
+                        () ->
+                                new MetadataTransform(
+                                        metadataConfig(metadataMapping),
+                                        connectorMetadataCatalogTable(
+                                                Collections.singletonList(metadataColumn))));
+
+        Assertions.assertTrue(exception.getMessage().contains(mismatchedKey));
+    }
+
+    @Test
+    void shouldRejectPhysicalInputColumnWithoutMetadataDeclaration() {
+        TableSchema tableSchema =
+                TableSchema.builder()
+                        .column(
+                                PhysicalColumn.of(
+                                        "payload",
+                                        BasicType.STRING_TYPE,
+                                        (Long) null,
+                                        true,
+                                        null,
+                                        null))
+                        .column(
+                                PhysicalColumn.of(
+                                        CONNECTOR_OFFSET,
+                                        BasicType.LONG_TYPE,
+                                        (Long) null,
+                                        true,
+                                        null,
+                                        null))
+                        .build();
+        CatalogTable physicalColumnOnlyTable =
+                CatalogTable.of(
+                        TableIdentifier.of("catalog", TablePath.DEFAULT),
+                        tableSchema,
+                        new HashMap<>(),
+                        new ArrayList<>(),
+                        "comment",
+                        "test",
+                        MetadataSchema.builder().build());
+        Map<String, String> metadataMapping = new LinkedHashMap<>();
+        metadataMapping.put(CONNECTOR_OFFSET, "metadata_offset");
+
+        TransformException exception =
+                Assertions.assertThrows(
+                        TransformException.class,
+                        () ->
+                                new MetadataTransform(
+                                        metadataConfig(metadataMapping), physicalColumnOnlyTable));
+
+        Assertions.assertTrue(exception.getMessage().contains(CONNECTOR_OFFSET));
+    }
+
+    @Test
     void shouldProjectKnowledgeSyncMetadataFromRowOptions() {
         Map<String, String> metadataMapping = new LinkedHashMap<>();
         metadataMapping.put(
@@ -312,6 +472,32 @@ public class MetadataTransformTest {
                         .column(
                                 PhysicalColumn.of(
                                         "text",
+                                        BasicType.STRING_TYPE,
+                                        (Long) null,
+                                        true,
+                                        null,
+                                        null))
+                        .build(),
+                new HashMap<>(),
+                new ArrayList<>(),
+                "comment",
+                "test",
+                MetadataSchema.builder().columns(metadata).build());
+    }
+
+    private static ReadonlyConfig metadataConfig(Map<String, String> metadataMapping) {
+        Map<String, Object> config = new HashMap<>();
+        config.put("metadata_fields", metadataMapping);
+        return ReadonlyConfig.fromMap(config);
+    }
+
+    private static CatalogTable connectorMetadataCatalogTable(List<Column> metadata) {
+        return CatalogTable.of(
+                TableIdentifier.of("catalog", TablePath.DEFAULT),
+                TableSchema.builder()
+                        .column(
+                                PhysicalColumn.of(
+                                        "payload",
                                         BasicType.STRING_TYPE,
                                         (Long) null,
                                         true,

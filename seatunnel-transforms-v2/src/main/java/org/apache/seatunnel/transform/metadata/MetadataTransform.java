@@ -55,10 +55,11 @@ public class MetadataTransform extends MultipleFieldOutputTransform {
     private void initOutputFields(CatalogTable inputCatalogTable, Map<String, String> fields) {
         List<String> sourceTableFiledNames =
                 Arrays.asList(inputCatalogTable.getTableSchema().getFieldNames());
+        this.metadataSchema = inputCatalogTable.getMetadataSchema();
         List<String> fieldNames = new ArrayList<>();
         for (Map.Entry<String, String> field : fields.entrySet()) {
             String srcField = field.getKey();
-            if (!isMetadataField(srcField)) {
+            if (!isMetadataField(srcField) && !isDeclaredMetadataField(srcField)) {
                 throw TransformCommonError.cannotFindMetadataFieldError(getPluginName(), srcField);
             }
             String targetField = field.getValue();
@@ -68,7 +69,6 @@ public class MetadataTransform extends MultipleFieldOutputTransform {
             fieldNames.add(field.getKey());
         }
         this.fieldNames = fieldNames;
-        this.metadataSchema = inputCatalogTable.getMetadataSchema();
         this.metadataFieldMapping = fields;
     }
 
@@ -107,7 +107,7 @@ public class MetadataTransform extends MultipleFieldOutputTransform {
                                 true,
                                 null,
                                 null);
-            } else if (metadataSchema != null && metadataSchema.contains(metadataFieldName)) {
+            } else if (isDeclaredMetadataField(metadataFieldName)) {
                 column =
                         ((MetadataColumn)
                                         metadataSchema
@@ -121,6 +121,12 @@ public class MetadataTransform extends MultipleFieldOutputTransform {
             columns[i] = column;
         }
         return columns;
+    }
+
+    private boolean isDeclaredMetadataField(String metadataFieldName) {
+        return metadataSchema != null
+                && metadataSchema.contains(metadataFieldName)
+                && metadataSchema.getColumn(metadataFieldName) instanceof MetadataColumn;
     }
 
     private Object getMetadataFieldValue(String metadataFieldName, SeaTunnelRowAccessor inputRow) {

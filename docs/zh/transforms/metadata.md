@@ -33,6 +33,20 @@ Metadata 转换插件用于将数据行中的元数据信息提取为普通字�
 | Gtid       | string | 全局事务 ID（格式：`server_uuid:transaction_id`）。GTID 未启用或快照行时返回 `null`。 | 仅 MySQL-CDC |
 | Partition |  string  |  数据所属的分区信息，多个分区字段使用逗号分隔  | 支持分区的连接器 |
 
+## 连接器声明的元数据字段
+
+除上述通用 Key 外，当上游连接器在 `CatalogTable.metadataSchema` 中声明连接器专属的逻辑 Key 时，`Metadata` 转换也可以投影该字段。连接器必须使用相同且区分大小写的 Key，将每行的值写入 `SeaTunnelRow.options`。
+
+元数据 schema 是可信边界和类型边界。投影后的物理列会保留声明的数据类型、可空性、长度、默认值和注释。仅存在于行 options 中或仅作为物理输入列存在的 Key 不是元数据，会被拒绝。如果已声明的可空 Key 在某行的 options 中没有值，则投影值为 `null`。
+
+可用的连接器专属 Key 取决于上游连接器。例如，如果连接器声明了 `ConnectorRecordId`，可以按以下方式投影：
+
+```hocon
+metadata_fields {
+  ConnectorRecordId = source_record_id
+}
+```
+
 ## Knowledge Sync 元数据字段
 
 Knowledge Sync 流程可以使用下面的逻辑元数据 Key 携带文档和 chunk 身份信息。这些 Key 只有通过 `Metadata` 转换显式投影后，才会成为真实的物理列。
@@ -54,11 +68,11 @@ Knowledge Sync 流程可以使用下面的逻辑元数据 Key 携带文档和 ch
 
 ### 重要说明
 
-1. **元数据字段区分大小写**：配置时必须严格按照上表中的 Key 名称（如 `Database`、`Table`、`RowKind` 等）。
+1. **元数据字段区分大小写**：通用 Key 必须严格使用上表中的名称（如 `Database`、`Table`、`RowKind`），连接器专属 Key 必须与上游 metadata schema 完全一致。
 2. **时间相关字段**：`Delay` 和 `SourceTimestamp` 仅在 CDC 连接器有效。`EventTime` 也会在 Kafka 源中使用 `ConsumerRecord.timestamp`（毫秒，非负时）写入。
 3. **Kafka 事件时间**：Kafka 源会在 `ConsumerRecord.timestamp` 非负时写入 `EventTime`，可通过 Metadata 转换将其暴露为普通字段。
 4. **Binlog/GTID 字段**：`BinlogFile`、`BinlogPos`、`BinlogRow`、`Gtid` 仅适用于 MySQL-CDC。使用 `startup.mode = initial` 时，快照行的这四个字段均为 `null`。
-5. **Knowledge Sync 投影需要显式配置**：Knowledge Sync 元数据字段只有在 `metadata_fields` 中配置、输入表 metadata schema 中声明了对应 Key，并且行 options 中存在对应值时才会被投影。该转换读取的是逻辑行元数据，不会读取同名的已有物理列。
+5. **元数据投影需要显式配置**：连接器专属和 Knowledge Sync 元数据字段必须在 `metadata_fields` 中配置，并在输入表 metadata schema 中声明。该转换从行 options 读取逻辑行元数据，不会读取同名的已有物理列。
 6. **兼容 Markdown RAG 物理字段**：当 `markdown_rag_metadata_enabled=true` 时，Markdown 除现有物理列 `source_uri`、`document_id`、`chunk_id`、`chunk_index`、`content_hash` 外，还会声明并输出逻辑 `SourceUri`、`DocumentId`、`DocumentHash`、`ChunkHash`。物理字段的名称、顺序、值、公式和路由行为均保持不变。
 7. **来源 URI 安全**：producer 在将 `SourceUri` 写入行 options 前，必须移除 URI userinfo、访问令牌、签名以及其他临时鉴权信息。通用 Markdown bridge 会移除分层远程 URI 的完整 query 和 fragment；如果来源身份依赖 query，则必须提供稳定且不敏感的 path。
 8. **Knowledge Sync 可空语义**：`DocumentId` 用于标识每个文档生命周期事件。声明 `Deleted` 后，producer 必须为普通行写入 `false`，为文档 tombstone 写入 `true`，不能使用 `null`。普通 chunk 行必须包含 `ChunkId`、`ChunkHash` 和 `ChunkIndex`；紧凑的文档 tombstone 可以将这些 chunk 字段留为 `null`。
@@ -137,7 +151,7 @@ metadata_fields {
 ```
 
 **注意事项：**
-- 左侧必须是支持的元数据 Key（见上表），且严格区分大小写
+- 左侧必须是受支持的通用 Key 或上游 metadata schema 声明的 Key，且严格区分大小写
 - 右侧是自定义的输出字段名，不能与原有字段重名
 - 可以只选择需要的元数据字段，不必全部配置
 

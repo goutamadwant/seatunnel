@@ -33,6 +33,20 @@ The Metadata transform plugin is used to extract metadata information from data 
 | Gtid       | string | Global Transaction ID (`server_uuid:transaction_id`). `null` when GTID is disabled or for snapshot rows. | MySQL-CDC only |
 | Partition |  string  |  Partition information of the data, multiple partition fields separated by commas  | Connectors supporting partitions |
 
+## Connector-Declared Metadata Fields
+
+In addition to the common keys above, the `Metadata` transform can project a connector-specific logical key when the upstream connector declares it in `CatalogTable.metadataSchema`. The connector must write each row's value to `SeaTunnelRow.options` under the same case-sensitive key.
+
+The metadata schema is the trust and type boundary. The projected physical column keeps the declared data type, nullability, length, default value, and comment. A key that exists only in row options or as a physical input column is not metadata and is rejected. If a declared nullable key has no value in a row's options, the projected value is `null`.
+
+Available connector-specific keys depend on the upstream connector. For example, if a connector declares `ConnectorRecordId`, it can be projected with:
+
+```hocon
+metadata_fields {
+  ConnectorRecordId = source_record_id
+}
+```
+
 ## Knowledge Sync Metadata Fields
 
 Knowledge Sync pipelines can use the following logical metadata keys to carry document and chunk identity. These keys become physical fields only after they are explicitly projected by the `Metadata` transform.
@@ -54,11 +68,11 @@ The `Metadata` transform does not generate Knowledge Sync metadata by itself. Th
 
 ### Important Notes
 
-1. **Metadata field names are case-sensitive**: Configuration must strictly follow the Key names in the table above (e.g., `Database`, `Table`, `RowKind`, etc.)
+1. **Metadata field names are case-sensitive**: Common keys must strictly follow the names in the table above (for example, `Database`, `Table`, and `RowKind`), and connector-specific keys must exactly match the upstream metadata schema.
 2. **Time fields**: `Delay` and `SourceTimestamp` are only available for CDC connectors. `EventTime` is also provided by the Kafka source via `ConsumerRecord.timestamp` when available.
 3. **Kafka event time**: The Kafka source writes `ConsumerRecord.timestamp` (milliseconds) into `EventTime` when it is non-negative, so you can surface it with the `Metadata` transform.
 4. **Binlog/GTID fields**: `BinlogFile`, `BinlogPos`, `BinlogRow`, and `Gtid` are MySQL-CDC specific. For `startup.mode = initial`, snapshot rows return `null` for all four fields.
-5. **Knowledge Sync projection is explicit**: Knowledge Sync metadata fields are projected only when they are configured in `metadata_fields`, declared in the input table metadata schema, and present in row options. This transform reads logical row metadata; it does not read existing physical columns with the same names.
+5. **Metadata projection is explicit**: Connector-specific and Knowledge Sync metadata fields must be configured in `metadata_fields` and declared in the input table metadata schema. This transform reads logical row metadata from row options; it does not read existing physical columns with the same names.
 6. **Markdown RAG compatibility**: With `markdown_rag_metadata_enabled=true`, Markdown declares and emits logical `SourceUri`, `DocumentId`, `DocumentHash`, and `ChunkHash` in addition to its existing physical `source_uri`, `document_id`, `chunk_id`, `chunk_index`, and `content_hash` columns. The physical names, order, values, formulas, and routing behavior are unchanged.
 7. **Source URI security**: Producers must remove URI user info, access tokens, signatures, and other transient authentication material before writing `SourceUri` into row options. The generic Markdown bridge removes the complete query and fragment from hierarchical remote URIs; a source whose identity depends on a query must provide a stable, non-sensitive path.
 8. **Knowledge Sync nullability**: `DocumentId` identifies every document lifecycle event. When `Deleted` is declared, producers must write `false` for normal rows and `true` for document tombstones rather than `null`. Normal chunk rows require `ChunkId`, `ChunkHash`, and `ChunkIndex`; compact document tombstones may leave those chunk fields `null`.
@@ -137,7 +151,7 @@ metadata_fields {
 ```
 
 **Notes:**
-- The left side must be a supported metadata Key (see table above), and is strictly case-sensitive
+- The left side must be a supported common key or a key declared by the upstream metadata schema, and is strictly case-sensitive
 - The right side is a custom output field name, which cannot duplicate existing field names
 - You can select only the metadata fields you need, not all of them must be configured
 
