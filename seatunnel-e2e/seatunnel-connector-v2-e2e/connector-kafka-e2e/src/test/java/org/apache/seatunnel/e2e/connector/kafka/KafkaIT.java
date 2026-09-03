@@ -46,6 +46,7 @@ import org.apache.seatunnel.e2e.common.container.TestContainer;
 import org.apache.seatunnel.e2e.common.container.TestContainerId;
 import org.apache.seatunnel.e2e.common.junit.DisabledOnContainer;
 import org.apache.seatunnel.format.avro.AvroDeserializationSchema;
+import org.apache.seatunnel.format.avro.AvroSerializationSchema;
 import org.apache.seatunnel.format.protobuf.ProtobufDeserializationSchema;
 import org.apache.seatunnel.format.text.TextSerializationSchema;
 
@@ -1759,6 +1760,37 @@ public class KafkaIT extends AbstractKafkaIT {
                     Assertions.assertEquals(
                             LocalDateTime.of(2024, 1, 1, 12, 59, 23), row.getField(14));
                 });
+    }
+
+    @TestTemplate
+    @DisabledOnContainer(value = {TestContainerId.SPARK_2_4})
+    public void testKafkaConfluentFramedAvroToAssert(TestContainer container)
+            throws IOException, InterruptedException, ExecutionException {
+        String topic = startModeTopic(container, "avro_schema_registry");
+        createKafkaTopic(topic);
+        SeaTunnelRowType rowType =
+                new SeaTunnelRowType(
+                        new String[] {"value"}, new SeaTunnelDataType<?>[] {BasicType.STRING_TYPE});
+        SeaTunnelRow row = new SeaTunnelRow(new Object[] {"seatunnel"});
+        byte[] payload = new AvroSerializationSchema(rowType).serialize(row);
+        producer.send(new ProducerRecord<>(topic, null, wrapWithAvroSchemaRegistryHeader(payload)))
+                .get();
+        producer.flush();
+
+        Container.ExecResult execResult =
+                container.executeJob(
+                        "/avro/kafka_confluent_framed_avro_to_assert.conf",
+                        Collections.singletonList("topic=" + topic));
+
+        Assertions.assertEquals(0, execResult.getExitCode(), execResult.getStderr());
+    }
+
+    private byte[] wrapWithAvroSchemaRegistryHeader(byte[] payload) {
+        byte[] message = new byte[5 + payload.length];
+        message[0] = 0;
+        message[4] = 1;
+        System.arraycopy(payload, 0, message, 5, payload.length);
+        return message;
     }
 
     @TestTemplate

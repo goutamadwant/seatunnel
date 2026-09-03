@@ -35,6 +35,7 @@ import org.apache.seatunnel.connectors.seatunnel.kafka.config.StartMode;
 import com.google.auto.service.AutoService;
 
 import java.io.Serializable;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -90,8 +91,14 @@ public class KafkaSourceFactory implements TableSourceFactory {
                                 KafkaSourceOptions.TABLE_LIST, new KafkaTableConfigsValidator()))
                 .conditional(
                         KafkaSourceOptions.FORMAT,
-                        MessageFormat.PROTOBUF,
+                        Arrays.asList(MessageFormat.AVRO, MessageFormat.PROTOBUF),
                         KafkaSourceOptions.STRIP_SCHEMA_REGISTRY_HEADER)
+                .conditional(
+                        KafkaSourceOptions.FORMAT,
+                        MessageFormat.AVRO,
+                        Conditions.extension(
+                                KafkaSourceOptions.STRIP_SCHEMA_REGISTRY_HEADER,
+                                new KafkaAvroSchemaRegistryHeaderValidator()))
                 .optional(
                         KafkaSourceOptions.START_MODE,
                         Conditions.extension(
@@ -113,6 +120,24 @@ public class KafkaSourceFactory implements TableSourceFactory {
     @Override
     public Class<? extends SeaTunnelSource> getSourceClass() {
         return KafkaSource.class;
+    }
+
+    private static class KafkaAvroSchemaRegistryHeaderValidator
+            implements ConditionExtension<Boolean> {
+        @Override
+        public String description() {
+            return "[avro_schema] must be configured when "
+                    + "[strip_schema_registry_header] is enabled for avro";
+        }
+
+        @Override
+        public boolean evaluate(ReadonlyConfig config, Boolean value)
+                throws OptionValidationException {
+            return !Boolean.TRUE.equals(value)
+                    || config.getOptional(KafkaSourceOptions.AVRO_SCHEMA)
+                            .filter(schema -> !schema.trim().isEmpty())
+                            .isPresent();
+        }
     }
 
     private static class KafkaPartitionDiscoveryValidator implements ConditionExtension<Boolean> {

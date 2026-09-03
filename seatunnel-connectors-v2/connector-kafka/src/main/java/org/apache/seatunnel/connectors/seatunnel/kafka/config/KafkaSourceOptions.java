@@ -136,8 +136,9 @@ public class KafkaSourceOptions extends KafkaBaseOptions {
                     .defaultValue(false)
                     .withDescription(
                             "Whether to strip the Confluent Schema Registry wire format header "
-                                    + "(magic byte, schema id and message indexes) before "
-                                    + "protobuf deserialization.");
+                                    + "before Avro or Protobuf deserialization. Avro uses a fixed "
+                                    + "5-byte header and requires avro_schema; Protobuf also includes "
+                                    + "message indexes.");
 
     public static final Option<String> AVRO_SCHEMA =
             Options.key("avro_schema")

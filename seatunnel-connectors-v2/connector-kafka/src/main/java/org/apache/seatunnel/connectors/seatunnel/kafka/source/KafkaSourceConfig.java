@@ -44,6 +44,7 @@ import org.apache.seatunnel.connectors.seatunnel.kafka.config.MessageFormat;
 import org.apache.seatunnel.connectors.seatunnel.kafka.config.MessageFormatErrorHandleWay;
 import org.apache.seatunnel.connectors.seatunnel.kafka.config.TableIdentifierConfig;
 import org.apache.seatunnel.format.avro.AvroDeserializationSchema;
+import org.apache.seatunnel.format.avro.SchemaRegistryAwareAvroDeserializationSchema;
 import org.apache.seatunnel.format.compatible.kafka.connect.json.CompatibleKafkaConnectDeserializationSchema;
 import org.apache.seatunnel.format.compatible.kafka.connect.json.KafkaConnectJsonFormatOptions;
 import org.apache.seatunnel.format.compatible.kafka.connect.json.NativeKafkaConnectDeserializationSchema;
@@ -424,13 +425,28 @@ public class KafkaSourceConfig implements Serializable {
                     break;
                 case AVRO:
                     Optional<String> avroSchema = readonlyConfig.getOptional(AVRO_SCHEMA);
-                    schema =
-                            avroSchema
-                                    .map(
-                                            writerSchema ->
-                                                    new AvroDeserializationSchema(
-                                                            catalogTable, writerSchema))
-                                    .orElseGet(() -> new AvroDeserializationSchema(catalogTable));
+                    if (readonlyConfig.get(STRIP_SCHEMA_REGISTRY_HEADER)) {
+                        String writerSchema =
+                                avroSchema
+                                        .filter(StringUtils::isNotBlank)
+                                        .orElseThrow(
+                                                () ->
+                                                        new IllegalArgumentException(
+                                                                "avro_schema must be configured when "
+                                                                        + "strip_schema_registry_header is enabled for avro"));
+                        schema =
+                                new SchemaRegistryAwareAvroDeserializationSchema(
+                                        catalogTable, writerSchema);
+                    } else {
+                        schema =
+                                avroSchema
+                                        .map(
+                                                writerSchema ->
+                                                        new AvroDeserializationSchema(
+                                                                catalogTable, writerSchema))
+                                        .orElseGet(
+                                                () -> new AvroDeserializationSchema(catalogTable));
+                    }
                     break;
                 case PROTOBUF:
                     boolean stripSchemaRegistryHeader =

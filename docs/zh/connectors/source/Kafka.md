@@ -61,7 +61,7 @@ import ChangeLog from '../changelog/connector-kafka.md';
 | common-options                      |                                     | 否    | -                            | 源插件的常见参数，详情请参考 [Source Common Options](../common-options/source-common-options.md)。                                                                                                                                                                                                                                                           |
 | protobuf_message_name               | String                              | 否    | -                            | 当格式设置为 protobuf 时有效，指定消息名称。                                                                                                                                                                                                                                                                                                    |
 | protobuf_schema                     | String                              | 否    | -                            | 当格式设置为 protobuf 时有效，指定 Schema 定义。                                                                                                                                                                                                                                                                                              |
-| strip_schema_registry_header        | Boolean                             | 否    | false                        | 当格式设置为 protobuf 时有效。是否在 Protobuf 反序列化之前去除 Confluent Schema Registry 线格式头部（magic byte、schema id 和 message indexes）。当消费使用 Confluent Schema Registry 编码的 Protobuf 消息时，此选项非常有用。启用后，连接器将尝试在解析 Protobuf 消息之前检测并删除 Schema Registry 头部。如果未检测到头部，它将回退到标准的 Protobuf 反序列化。                                                                                                                                                                                                                                                                                              |
+| strip_schema_registry_header        | Boolean                             | 否    | false                        | 当 `format` 为 `avro` 或 `protobuf` 时有效。对于 Avro，必须配置 `avro_schema`，连接器会校验并剥离固定的 5 字节 Confluent 头部，但不会解析 schema ID。对于 Protobuf，连接器会检测并剥离头部及 message indexes；未检测到头部时回退到普通 Protobuf 解码。                                                                                                                                                                                                                                                                                              |
 | reader_cache_queue_size             | Integer                             | 否    | 2                            | Fetcher 与 Reader 线程之间缓冲队列的容量。每个元素是一次 `consumer.poll()` 的整批结果，而非单条消息。详见 [reader_cache_queue_size](#reader_cache_queue_size)。 |
 | is_native                           | Boolean                             | 否    | false                        | 支持保留record的源信息。                                                                                                                                                                                                                                                                                                                |
 | kafka_headers_fields                | Array                               | 否    | -                            | 指定要从 Kafka 消息 header 中提取并映射为行字段的 header key 列表。每个 header 值以 STRING 类型追加到输出行的末尾（位于正常 schema 字段之后）。不支持 NATIVE 格式。                                                                                                                                                                                                               |
@@ -631,7 +631,9 @@ sink {
 
 ### Avro 反序列化
 
-当 Avro 消息的 record 名称、namespace 或 union 结构与 SeaTunnel schema 不一致时，需要将 `format` 设置为 `avro` 并提供 `avro_schema`。如果不提供 `avro_schema`，连接器会从用户配置的 `schema` 块派生解码 schema，并同时将其作为 reader schema 和 writer schema 使用；如果生产端的 Avro 结构（record 名称、namespace、union 结构）与 SeaTunnel schema 不一致，请显式配置 `avro_schema`。当前实现中没有 Confluent Schema Registry 查询或按消息回退读取 schema 的机制。
+当 Avro 消息的 record 名称、namespace 或 union 结构与 SeaTunnel schema 不一致时，需要将 `format` 设置为 `avro` 并提供 `avro_schema`。如果不提供 `avro_schema`，连接器会从用户配置的 `schema` 块派生解码 schema，并同时将其作为 reader schema 和 writer schema 使用；如果生产端的 Avro 结构（record 名称、namespace、union 结构）与 SeaTunnel schema 不一致，请显式配置 `avro_schema`。
+
+对于 Confluent `KafkaAvroSerializer` 生成的消息，还需要设置 `strip_schema_registry_header = true`。连接器会校验 magic byte，剥离固定的 5 字节头部，再使用 `avro_schema` 解码。SeaTunnel 不会访问 Schema Registry，也不会解析 schema ID。启用该选项后，原始 Avro 消息或格式错误的头部会直接失败而不会回退，因为合法的原始 Avro 数据也可能以 0 开头。
 
 ```hocon
 source {
@@ -639,6 +641,7 @@ source {
     topic = "users_avro"
     bootstrap.servers = "localhost:9092"
     format = avro
+    strip_schema_registry_header = true
     avro_schema = """
       {
         "type": "record",
@@ -704,7 +707,7 @@ transform {
 
 支持：`json`、`text`、`canal_json`、`debezium_json`、`ogg_json`、`avro`、`protobuf` 和 `NATIVE`。当需要将 Kafka 元数据（headers、key、partition、timestamp）作为记录字段使用时，选择 `NATIVE` 格式。
 
-`format = avro` 仅支持原始（未经 Schema Registry 封装）的 Avro 消息。与 `protobuf`（参见 [Protobuf with Schema Registry wire format](#protobuf-with-schema-registry-wire-format)）不同，`avro` 没有对应 `strip_schema_registry_header` 的选项：如果 topic 是由 Confluent `KafkaAvroSerializer` 写入、消息中带有 Confluent Schema Registry 线格式头部（magic byte + schema id），`format = avro` 不会在反序列化前去除该头部，因此会读取失败或得到损坏的数据。`avro_schema` 仅用于为普通（非 Schema Registry）Avro 消息提供 writer schema。
+`format = avro` 默认读取原始 Avro 消息。对于 Confluent `KafkaAvroSerializer` 生成的消息，需要同时配置 `avro_schema` 和 `strip_schema_registry_header = true`；SeaTunnel 会剥离 5 字节线上格式头部，并使用配置的 writer schema 解码，但不会访问 Schema Registry。
 
 ### 如何配置 SASL/Kerberos 认证？
 

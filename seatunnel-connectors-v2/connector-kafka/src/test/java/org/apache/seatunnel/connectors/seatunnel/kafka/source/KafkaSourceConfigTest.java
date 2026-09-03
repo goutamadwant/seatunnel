@@ -24,6 +24,8 @@ import org.apache.seatunnel.api.table.catalog.TablePath;
 import org.apache.seatunnel.api.table.type.BasicType;
 import org.apache.seatunnel.api.table.type.SeaTunnelRow;
 import org.apache.seatunnel.api.table.type.SeaTunnelRowType;
+import org.apache.seatunnel.format.avro.AvroDeserializationSchema;
+import org.apache.seatunnel.format.avro.SchemaRegistryAwareAvroDeserializationSchema;
 import org.apache.seatunnel.format.json.debezium.DebeziumJsonDeserializationSchemaDispatcher;
 
 import org.junit.jupiter.api.Assertions;
@@ -246,5 +248,62 @@ public class KafkaSourceConfigTest {
         KafkaSourceConfig sourceConfig = new KafkaSourceConfig(ReadonlyConfig.fromMap(configMap));
 
         Assertions.assertNotNull(sourceConfig.getMapMetadata().get(TablePath.of(null, table)));
+    }
+
+    @Test
+    void shouldSelectSchemaRegistryAwareAvroDeserializerWhenEnabled() {
+        Map<String, Object> configMap = avroConfig();
+        configMap.put("strip_schema_registry_header", true);
+        configMap.put(
+                "avro_schema",
+                "{\"type\":\"record\",\"name\":\"SeaTunnelRecord\",\"fields\":["
+                        + "{\"name\":\"value\",\"type\":[\"null\",\"string\"]}]}");
+
+        KafkaSourceConfig sourceConfig = new KafkaSourceConfig(ReadonlyConfig.fromMap(configMap));
+
+        DeserializationSchema<SeaTunnelRow> deserializationSchema =
+                sourceConfig.getMapMetadata().get(TablePath.of("test")).getDeserializationSchema();
+        DeserializationSchema<SeaTunnelRow> delegate =
+                ((KafkaEventTimeDeserializationSchema) deserializationSchema).getDelegate();
+        Assertions.assertInstanceOf(SchemaRegistryAwareAvroDeserializationSchema.class, delegate);
+    }
+
+    @Test
+    void shouldKeepRawAvroDeserializerByDefault() {
+        KafkaSourceConfig sourceConfig =
+                new KafkaSourceConfig(ReadonlyConfig.fromMap(avroConfig()));
+
+        DeserializationSchema<SeaTunnelRow> deserializationSchema =
+                sourceConfig.getMapMetadata().get(TablePath.of("test")).getDeserializationSchema();
+        DeserializationSchema<SeaTunnelRow> delegate =
+                ((KafkaEventTimeDeserializationSchema) deserializationSchema).getDelegate();
+        Assertions.assertInstanceOf(AvroDeserializationSchema.class, delegate);
+    }
+
+    @Test
+    void shouldRejectAvroHeaderStrippingWithoutWriterSchema() {
+        Map<String, Object> configMap = avroConfig();
+        configMap.put("strip_schema_registry_header", true);
+
+        IllegalArgumentException exception =
+                Assertions.assertThrows(
+                        IllegalArgumentException.class,
+                        () -> new KafkaSourceConfig(ReadonlyConfig.fromMap(configMap)));
+
+        Assertions.assertTrue(exception.getMessage().contains("avro_schema must be configured"));
+    }
+
+    private Map<String, Object> avroConfig() {
+        Map<String, Object> schemaFields = new HashMap<>();
+        schemaFields.put("value", "string");
+        Map<String, Object> schema = new HashMap<>();
+        schema.put("fields", schemaFields);
+
+        Map<String, Object> configMap = new HashMap<>();
+        configMap.put("bootstrap.servers", "localhost:9092");
+        configMap.put("topic", "test");
+        configMap.put("schema", schema);
+        configMap.put("format", "avro");
+        return configMap;
     }
 }

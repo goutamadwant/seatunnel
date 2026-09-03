@@ -35,6 +35,9 @@ import java.util.Map;
 
 class KafkaFactoryTest {
 
+    private static final String AVRO_SCHEMA =
+            "{\"type\":\"record\",\"name\":\"SeaTunnelRecord\",\"fields\":[]}";
+
     private final OptionRule sourceRule = new KafkaSourceFactory().optionRule();
 
     private void validate(Map<String, Object> config) {
@@ -160,6 +163,53 @@ class KafkaFactoryTest {
 
         cfg.put("partition-discovery.interval-millis", 10);
         Assertions.assertDoesNotThrow(() -> validate(cfg));
+    }
+
+    @Test
+    void shouldAllowOrdinaryAvroWithoutWriterSchema() {
+        Map<String, Object> cfg = validAvroConfig();
+
+        Assertions.assertDoesNotThrow(() -> validate(cfg));
+    }
+
+    @Test
+    void shouldRequireWriterSchemaWhenAvroHeaderStrippingIsEnabled() {
+        Map<String, Object> cfg = validAvroConfig();
+        cfg.put("strip_schema_registry_header", true);
+
+        OptionValidationException exception =
+                Assertions.assertThrows(OptionValidationException.class, () -> validate(cfg));
+
+        Assertions.assertTrue(exception.getMessage().contains("avro_schema"));
+    }
+
+    @Test
+    void shouldAcceptAvroHeaderStrippingWithWriterSchema() {
+        Map<String, Object> cfg = validAvroConfig();
+        cfg.put("strip_schema_registry_header", true);
+        cfg.put("avro_schema", AVRO_SCHEMA);
+
+        Assertions.assertDoesNotThrow(() -> validate(cfg));
+        Assertions.assertDoesNotThrow(() -> validateUnknownKeys(cfg));
+    }
+
+    @Test
+    void shouldPreserveProtobufHeaderStrippingWithoutAvroSchema() {
+        Map<String, Object> cfg = new HashMap<>();
+        cfg.put("bootstrap.servers", "localhost:9092");
+        cfg.put("topic", "test-topic");
+        cfg.put("format", "PROTOBUF");
+        cfg.put("strip_schema_registry_header", true);
+
+        Assertions.assertDoesNotThrow(() -> validate(cfg));
+    }
+
+    private Map<String, Object> validAvroConfig() {
+        Map<String, Object> cfg = new HashMap<>();
+        cfg.put("bootstrap.servers", "localhost:9092");
+        cfg.put("topic", "test-topic");
+        cfg.put("format", "AVRO");
+        return cfg;
     }
 
     // --- Multi-table (tables_configs) tests ---
