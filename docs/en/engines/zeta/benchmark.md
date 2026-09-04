@@ -315,8 +315,13 @@ repository branch.
 Manual runs offer common selectors through `benchmarks`; `custom_benchmarks` accepts a class,
 method, or regular expression and overrides that choice. `.*` selects all current and future
 benchmarks. When `pr_number` is set, the workflow executes `baseline -> PR -> PR -> baseline` on the
-same worker, compares the median of both runs for each revision, and reports a direction-adjusted
-percentage where a positive value is favorable.
+same worker. The comparison pools the raw measurement samples from both runs for each revision and
+reports their mean, median, coefficient of variation (CV), and sample count. It also reports the
+largest per-run JMH Error percentage instead of incorrectly combining independent confidence
+intervals. The direction-adjusted change uses the pooled medians, where a positive value is
+favorable. The median limits the effect of an isolated runner or filesystem outlier on the central
+comparison, while mean, maximum Error, and CV keep that instability visible. Older normalized
+reports without raw samples remain comparable by falling back to their JMH Score.
 
 Absolute results remain sensitive to machine load, warmup, CPU frequency, and runner hardware.
 Use GitHub-hosted results as trend and functional-check evidence. Prefer repeated baseline/change

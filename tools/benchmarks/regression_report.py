@@ -20,6 +20,7 @@
 
 import argparse
 import json
+import math
 import pathlib
 import statistics
 
@@ -370,6 +371,37 @@ def median_value(metrics, target_unit=None):
     return statistics.median(values) if values else None
 
 
+def jmh_sample_values(metrics, target_unit=None):
+    values = []
+    for metric in metrics:
+        unit = target_unit or metric["unit"]
+        samples = metric.get("samples") or [metric.get("value")]
+        for sample in samples:
+            if sample is None:
+                continue
+            sample = float(sample)
+            if math.isfinite(sample):
+                values.append(convert_unit(sample, metric["unit"], unit))
+    return values
+
+
+def pooled_coefficient_of_variation(values):
+    if len(values) < 2:
+        return None
+    mean = statistics.mean(values)
+    if mean == 0.0:
+        return None
+    return statistics.stdev(values) / abs(mean) * 100.0
+
+
+def maximum_relative_error(metrics):
+    values = [relative_error(metric) for metric in metrics]
+    finite_values = [
+        value for value in values if value is not None and math.isfinite(value)
+    ]
+    return max(finite_values) if finite_values else None
+
+
 def adjusted_change(baseline, candidate, direction):
     if baseline in (None, 0.0) or candidate is None:
         return None
@@ -396,8 +428,12 @@ def jmh_comparison_lines(baselines, candidates):
     lines = [
         "### JMH comparison",
         "",
-        "| Benchmark | Parameters | Baseline | Candidate | Change | Unit |",
-        "| --- | --- | ---: | ---: | ---: | --- |",
+        "Mean, median, and `CV` use all raw measurement samples from the compared runs. "
+        "`Max Error` is the largest per-run JMH confidence-interval half-width as a percentage "
+        "of Score; use it with `CV` to identify unstable comparisons.",
+        "",
+        "| Benchmark | Parameters | Baseline mean | Baseline median | Baseline max Error | Baseline CV | Baseline N | Candidate mean | Candidate median | Candidate max Error | Candidate CV | Candidate N | Change | Unit |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     names.sort(
         key=lambda name: jmh_sort_key(
@@ -409,14 +445,32 @@ def jmh_comparison_lines(baselines, candidates):
         candidate_group = candidate_metrics.get(name, [])
         metric = (candidate_group or baseline_group)[0]
         target_unit = (candidate_group or baseline_group)[0]["unit"]
-        baseline = median_value(baseline_group, target_unit)
-        candidate = median_value(candidate_group, target_unit)
+        baseline_samples = jmh_sample_values(baseline_group, target_unit)
+        candidate_samples = jmh_sample_values(candidate_group, target_unit)
+        baseline_mean = statistics.mean(baseline_samples) if baseline_samples else None
+        baseline = statistics.median(baseline_samples) if baseline_samples else None
+        candidate_mean = statistics.mean(candidate_samples) if candidate_samples else None
+        candidate = statistics.median(candidate_samples) if candidate_samples else None
         lines.append(
-            "| `{}` | `{}` | {} | {} | {} | {} |".format(
+            "| `{}` | `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
                 short_benchmark_name(metric),
                 compact_params(metric.get("params", {})),
+                format_number(baseline_mean),
                 format_number(baseline),
+                format_percent(maximum_relative_error(baseline_group), signed=False),
+                format_percent(
+                    pooled_coefficient_of_variation(baseline_samples),
+                    signed=False,
+                ),
+                len(baseline_samples),
+                format_number(candidate_mean),
                 format_number(candidate),
+                format_percent(maximum_relative_error(candidate_group), signed=False),
+                format_percent(
+                    pooled_coefficient_of_variation(candidate_samples),
+                    signed=False,
+                ),
+                len(candidate_samples),
                 format_percent(adjusted_change(baseline, candidate, metric["direction"])),
                 target_unit,
             )

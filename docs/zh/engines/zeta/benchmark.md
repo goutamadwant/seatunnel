@@ -300,8 +300,12 @@ S3、OSS 或其他外部存储服务。Setup、校验和清理均不计入 Score
 
 手动运行可以通过 `benchmarks` 选择常用 selector；`custom_benchmarks` 可以填写类名、方法名或
 正则表达式，并覆盖前者。`.*` 会选择当前及未来的所有 benchmark。设置 `pr_number` 后，
-workflow 会在同一 Worker 上按 `baseline -> PR -> PR -> baseline` 顺序运行，比较两个版本各自
-两次结果的中位数，并输出经过优化方向校正的百分比；正值表示 Candidate 向更优方向变化。
+workflow 会在同一 Worker 上按 `baseline -> PR -> PR -> baseline` 顺序运行。对每个版本，报告
+会合并两次运行的原始 Measurement 样本，输出样本均值、中位数、变异系数（CV）和样本数量。
+报告还会显示各次运行中最大的 JMH Error 百分比，避免错误地合并相互独立的置信区间。经过优化
+方向校正的变化百分比根据两个中位数计算；正值表示 Candidate 向更优方向变化。中位数可降低
+单个 Runner 或文件系统异常值对中心值的影响，均值、最大 Error 和 CV 则继续展示这种不稳定
+性。对于不包含原始样本的旧版标准化报告，比较工具会回退到 JMH Score。
 
 绝对结果仍会受到机器负载、预热、CPU 频率和 Runner 硬件影响。GitHub 托管 Runner 的结果
 适合用于趋势与功能检查。精确比较应像 PR 对比一样，在同一台机器上重复运行 Base 与 Change；
