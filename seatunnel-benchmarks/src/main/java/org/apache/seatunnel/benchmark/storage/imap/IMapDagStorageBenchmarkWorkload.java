@@ -140,6 +140,18 @@ public class IMapDagStorageBenchmarkWorkload {
         return storeKeys[STORE_OPERATIONS_PER_INVOCATION - 1];
     }
 
+    /** Checks every acknowledged value without replacing the existing sampled WAL reload checks. */
+    public void verifyAllStoredJobDags() {
+        if (storedDagCountInIteration != STORE_OPERATIONS_PER_INVOCATION) {
+            throw new IllegalStateException("The measured batch did not complete all writes");
+        }
+        for (long key : storeKeys) {
+            if (!finishedJobDag.equals(finishedJobDagMap.get(key))) {
+                throw new IllegalStateException("Incorrect finished DAG for key " + key);
+            }
+        }
+    }
+
     public void loadFinishedJobDag() {
         finishedJobDagMap.loadAll(Collections.singleton(LOAD_KEY), true);
         loadExecuted = true;

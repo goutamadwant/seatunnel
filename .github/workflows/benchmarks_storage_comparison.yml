@@ -1,0 +1,94 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License. You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+name: Storage Benchmark Comparison
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: 'Trusted commit with both lifecycle benchmarks. Its build executes code.'
+        required: true
+        type: string
+      candidate_ref:
+        description: 'Trusted fixture-only candidate with the same production code.'
+        required: true
+        type: string
+      java_version:
+        description: 'One JDK for both revisions; run the other JDK separately.'
+        type: choice
+        options: ['8', '11']
+        default: '11'
+      allow_identical:
+        description: 'Explicitly permit identical artifacts for A/A calibration.'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: tools-source
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.baseline_ref }}
+          path: baseline
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_ref }}
+          path: candidate
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java_version }}
+      - name: Build both artifacts before timing
+        shell: bash
+        run: |
+          for role in baseline candidate; do
+            (cd "$role" && ./mvnw -B -Pbenchmark -pl seatunnel-benchmarks -am -DskipTests -Dskip.ui=true package)
+          done
+          echo "BASELINE_SHA=$(git -C baseline rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "CANDIDATE_SHA=$(git -C candidate rev-parse HEAD)" >> "$GITHUB_ENV"
+          # A/A uses the exact same bytes, avoiding independent JAR build timestamps.
+          if [[ "$(git -C baseline rev-parse HEAD)" == "$(git -C candidate rev-parse HEAD)" ]]; then
+            cp baseline/seatunnel-benchmarks/target/benchmarks.jar candidate/seatunnel-benchmarks/target/benchmarks.jar
+          fi
+      - name: Collect fixed descriptive pilot in paired runner blocks
+        env:
+          ALLOW_IDENTICAL: ${{ inputs.allow_identical }}
+        shell: bash
+        run: |
+          extra=()
+          if [[ "$ALLOW_IDENTICAL" == "true" ]]; then extra+=(--allow-identical); fi
+          python3 tools-source/tools/benchmarks/storage_lifecycle_matrix.py \
+            --purpose comparison --blocks 2 --seed 12060 \
+            --baseline baseline/seatunnel-benchmarks/target/benchmarks.jar \
+            --candidate candidate/seatunnel-benchmarks/target/benchmarks.jar \
+            --output storage-comparison "${extra[@]}"
+      - name: Preserve all results including failed collections
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: storage-comparison-java${{ inputs.java_version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: storage-comparison/
+          retention-days: 30
+          if-no-files-found: warn

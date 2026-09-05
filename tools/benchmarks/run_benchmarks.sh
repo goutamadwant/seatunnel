@@ -152,6 +152,7 @@ run_benchmark() {
         cd "${checkout_dir}"
         java -Dseatunnel.benchmark.result.dir="${pipeline_dir}" \
             -jar seatunnel-benchmarks/target/benchmarks.jar "${benchmark_regex}" \
+            -e 'IMapDagStorageLifecycleBenchmark.finishedJobDagStartupEndToEnd$' \
             -f "${forks}" \
             -wi 3 \
             -i 5 \

@@ -489,6 +489,81 @@ monitoring.
    [Benchmarking Distributed Stream Data Processing Systems](https://arxiv.org/pdf/1802.08496),
    ICDE 2018.
 
+## Experimental Storage Lifecycle Measurements
+
+`IMapDagStorageLifecycleBenchmark` separates two timing contracts without changing
+production storage or replacing `IMapDagStorageBenchmark.finishedJobDagStore`:
+
+- `finishedJobDagStartupEndToEnd`: milliseconds for engine/client startup, fixture
+  seeding and the first 100 sequential writes together. Every fresh fork has zero
+  warmup and exactly one measurement. JVM process launch, verification and shutdown
+  are excluded. This is not per-DAG latency or an operating-system cold-cache test.
+- `finishedJobDagStoreAfterReadiness`: microseconds per DAG, normalized from a
+  batch of 100 writes after an operational readiness boundary and fixed warmup.
+  Coordinator-active is observed, fixture seeding completes, and the production
+  MapStore reloads and validates the existing load sentinel. Coordinator-active
+  is checked again and at both iteration boundaries.
+
+This boundary does not guarantee completion of subsequent scheduler/realtime-metrics
+startup, background-service idleness or JVM steady state. Those services remain
+enabled normally. A stronger service-readiness definition requires separate agreement;
+do not describe the current predicate as universal steady state.
+
+Readiness is bounded and interruptible. Member shutdown, readiness timeout, failed
+storage read-back and interruption fail setup. Storage RPCs retain production
+timeouts; the collector also bounds each fork. No result-dependent settling sleep
+is added. Both methods retain the existing TTL, retained entries, load sentinel,
+sequential writes and sampled WAL reload/cleanup. All batch values are additionally
+checked through the map outside timing. Local read-back does not certify crash
+durability. One-pass cleanup is a separate fixture proposal, not part of this change.
+
+### Matched Linux Collection
+
+The manual `Storage Benchmark Comparison` workflow builds two trusted revisions
+before timing and runs both sequentially in the same `ubuntu-24.04` allocation
+and JDK. Both revisions must contain the lifecycle methods and identical
+non-benchmark artifact entries. No production optimization is evaluated by this
+fixture-only collector.
+
+The descriptive pilot covers six parameter cells and both methods in two
+counterbalanced ABBA/BAAB blocks: 96 fresh JVMs per JDK. Post-readiness uses
+3 warmup and 5 measurement batches; startup uses 0 warmup and 1 measurement
+per JVM. Results from these different contracts must not be pooled.
+Run Java 8 and Java 11 separately, never as a cross-JDK speed comparison.
+
+First explicitly calibrate with identical artifacts (A/A); this is not an
+optimization comparison:
+
+```bash
+python3 tools/benchmarks/storage_lifecycle_matrix.py \
+  --purpose comparison --blocks 2 --seed 12060 --allow-identical \
+  --baseline seatunnel-benchmarks/target/benchmarks.jar \
+  --candidate seatunnel-benchmarks/target/benchmarks.jar \
+  --output storage-aa
+```
+
+`--purpose smoke` runs 12 functional cases and does not produce performance
+comparison evidence. The generic benchmark runner excludes the startup method
+because its global warmup settings violate the fresh-JVM contract. Use the
+dedicated collector instead. It rejects missing samples, wrong units/parameters,
+unexpected JVM flags and changed artifacts, and refuses to overwrite output.
+Retain failed runs rather than replacing only unfavorable samples.
+
+Manifests retain exact commands, JVM identity, checksums, CPU and runner metadata,
+load observations and raw fork results. Analysis reports separate block contrasts,
+fork means, between-fork SD/CV and within-fork SD/CV. A single startup sample has
+no within-fork dispersion estimate. Do not derive individual-write p95/p99 from
+batch averages or treat JMH Error as an interval for the candidate/baseline ratio.
+Two blocks are descriptive, not a statistical non-regression bound.
+
+Use a baseline pilot to predeclare the confirmation budget and thresholds before
+examining a candidate. Keep JDK, runner class, heap, storage, warmup, measurement
+count and reporting rules matched. Do not tune settings to lower CV. Profile CPU,
+wall, allocation, locks and JFR separately from scored runs. Docker Desktop Linux
+smoke results are not matched GitHub runner evidence. A production change requires
+reproducible attribution plus the relevant correctness and durability tests.
+
+
 ## Related Documentation
 
 - [Busyness and Backpressure](./busyness-and-backpressure.md)

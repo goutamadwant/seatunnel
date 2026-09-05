@@ -461,6 +461,62 @@ Benchmark 应保持小而专注，优先选择无需外部服务、可以在单�
    [Benchmarking Distributed Stream Data Processing Systems](https://arxiv.org/pdf/1802.08496)，
    ICDE 2018。
 
+## 实验性存储生命周期测量
+
+`IMapDagStorageLifecycleBenchmark` 区分两个计时边界，不修改生产存储，
+也不替换原有的 `IMapDagStorageBenchmark.finishedJobDagStore`：
+
+- `finishedJobDagStartupEndToEnd`：每个新 JVM 不预热，只测量一次；毫秒分数包含
+  引擎和客户端启动、数据准备及首次顺序写入 100 个 DAG。不包含 JVM 进程启动、验证或关闭，
+  不能解释为单个 DAG 延迟或系统冷缓存性能。
+- `finishedJobDagStoreAfterReadiness`：观察 coordinator-active、准备数据，
+  并通过生产 MapStore 重新加载和验证已有哨兵，然后进行固定预热。
+  每次测量 100 次写入，归一化为每个 DAG 的微秒延迟。迭代前后再次检查 coordinator-active。
+
+此边界不保证后续调度器、实时指标服务启动完毕，也不保证后台服务或 JIT 空闲。
+保留正常后台服务；更强的服务就绪定义仍需讨论，不能声称已达到通用稳态。
+
+等待有超时并响应中断。成员停止、超时或存储验证失败会使准备阶段失败。
+存储 RPC 保留生产超时，收集器另有限制每个 fork 的总时间。不根据结果添加等待。
+保留 TTL、已有条目、加载哨兵、顺序写入及原有 WAL 抽样加载和清理；
+计时外另外检查全部批次值。本地读回不代表崩溃持久性，单次 WAL 清理属于独立提案。
+
+### 匹配的 Linux 收集
+
+手动触发 `Storage Benchmark Comparison` 工作流，在同一个 `ubuntu-24.04`
+runner 和同一 JDK 中先构建两个可信版本，再顺序运行。
+两个版本必须包含生命周期方法，且非基准测试制品内容相同；不用于评估生产优化。
+
+描述性试验包含六组参数、两种方法和两个反向 ABBA/BAAB 区块，每个 JDK 共 96 个新 JVM。
+就绪后使用 3 次预热、5 次测量；启动路径使用 0 次预热、1 次测量，结果不得混合。
+Java 8 和 Java 11 分别运行，不用于跨 JDK 性能比较。
+
+先以相同制品做明确标注的 A/A 校准：
+
+```bash
+python3 tools/benchmarks/storage_lifecycle_matrix.py \
+  --purpose comparison --blocks 2 --seed 12060 --allow-identical \
+  --baseline seatunnel-benchmarks/target/benchmarks.jar \
+  --candidate seatunnel-benchmarks/target/benchmarks.jar \
+  --output storage-aa
+```
+
+`--purpose smoke` 运行 12 个功能用例，不是性能证据。通用 runner 排除启动方法，
+避免全局预热参数破坏新 JVM 边界。专用收集器拒绝样本缺失、参数或单位错误、
+JVM 参数变化及制品变化，不覆盖原结果。保留失败试验，不只替换不利样本。
+
+清单保存命令、JVM、校验和、CPU、runner、负载和原始 fork 结果。
+按区块报告 fork 均值、fork 间及 fork 内 SD/CV。单个启动样本不能估计 fork 内波动。
+不能从批次均值推导单次写入 p95/p99，也不能把 JMH Error 当作版本比值的置信区间。
+两个区块仅用于描述，不能证明统计意义上的无回归。
+
+根据基线预先确定确认试验预算及阈值，再查看候选结果。
+固定 JDK、runner、堆、存储、预热、样本数量及报告规则，不为降低 CV 调整设置。
+CPU、wall、分配、锁和 JFR 分析与正式计时分开。
+Docker Desktop Linux 冒烟结果不是匹配的 GitHub runner 证据；
+生产优化还需要可重复归因和相应正确性、持久性测试。
+
+
 ## 相关文档
 
 - [忙碌度与背压](./busyness-and-backpressure.md)
