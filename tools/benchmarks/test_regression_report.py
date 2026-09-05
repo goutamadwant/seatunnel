@@ -36,34 +36,14 @@ class RegressionReportTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unsupported benchmark report schema"):
                 regression_report.load_report(path)
 
-    def test_jmh_comparison_uses_raw_statistics_and_converts_units(self):
+    def test_jmh_comparison_uses_medians_and_converts_units(self):
         baselines = [
-            self.report(
-                "dev",
-                self.jmh_metric(
-                    34000.0,
-                    "ops/s",
-                    samples=[1000.0, 1000.0, 100000.0],
-                    score_error=3400.0,
-                ),
-            ),
-            self.report(
-                "dev",
-                self.jmh_metric(
-                    1.0, "ops/ms", samples=[1.0, 1.0], score_error=0.2
-                ),
-            ),
+            self.report("dev", self.jmh_metric(1000.0, "ops/s")),
+            self.report("dev", self.jmh_metric(1.0, "ops/ms")),
         ]
         candidates = [
-            self.report(
-                "pr",
-                self.jmh_metric(
-                    1.1, "ops/ms", samples=[1.1, 1.1, 1.1], score_error=0.055
-                ),
-            ),
-            self.report(
-                "pr", self.jmh_metric(1100.0, "ops/s", samples=[1100.0, 1100.0])
-            ),
+            self.report("pr", self.jmh_metric(1.1, "ops/ms")),
+            self.report("pr", self.jmh_metric(1100.0, "ops/s")),
         ]
 
         markdown = "\n".join(
@@ -73,59 +53,51 @@ class RegressionReportTest(unittest.TestCase):
         self.assertIn("1.000", markdown)
         self.assertIn("1.100", markdown)
         self.assertIn("+10.00%", markdown)
-        self.assertIn("Baseline CV", markdown)
-        self.assertIn("Candidate CV", markdown)
-        self.assertIn("Baseline mean", markdown)
-        self.assertIn("Candidate mean", markdown)
-        self.assertIn("Baseline max Error", markdown)
-        self.assertIn("Candidate max Error", markdown)
-        self.assertIn("Baseline N", markdown)
-        self.assertIn("Candidate N", markdown)
-        self.assertIn("20.800", markdown)
-        self.assertIn("20.00%", markdown)
-        self.assertIn("5.00%", markdown)
-        self.assertIn("212.86%", markdown)
-        self.assertIn("0.00%", markdown)
-        self.assertIn("| 5 |", markdown)
         self.assertIn("ops/ms", markdown)
 
-    def test_jmh_comparison_falls_back_to_score_without_raw_samples(self):
-        baseline_metric = self.jmh_metric(100.0, "ops/s")
-        candidate_metric = self.jmh_metric(110.0, "ops/s")
-        del baseline_metric["samples"]
-        del candidate_metric["samples"]
+    def test_jmh_comparison_reports_score_cv_error_and_changes(self):
+        baseline_one = self.jmh_metric(100.0, "ops/s")
+        baseline_one.update({"score_error": 10.0, "sample_standard_deviation": 20.0})
+        baseline_two = self.jmh_metric(100.0, "ops/s")
+        baseline_two.update({"score_error": 10.0, "sample_standard_deviation": 10.0})
+        candidate_one = self.jmh_metric(110.0, "ops/s")
+        candidate_one.update({"score_error": 22.0, "sample_standard_deviation": 11.0})
+        candidate_two = self.jmh_metric(110.0, "ops/s")
+        candidate_two.update({"score_error": 22.0, "sample_standard_deviation": 11.0})
+        baselines = [
+            self.report("dev", baseline_one),
+            self.report("dev", baseline_two),
+        ]
+        candidates = [
+            self.report("PR #123", candidate_one),
+            self.report("PR #123", candidate_two),
+        ]
 
         markdown = "\n".join(
-            regression_report.jmh_comparison_lines(
-                [self.report("dev", baseline_metric)],
-                [self.report("pr", candidate_metric)],
-            )
+            regression_report.jmh_comparison_lines(baselines, candidates)
         )
 
-        self.assertIn("100.000", markdown)
-        self.assertIn("110.000", markdown)
-        self.assertIn("+10.00%", markdown)
-        self.assertIn("n/a", markdown)
-
-    def test_jmh_comparison_ignores_non_finite_raw_samples(self):
-        baseline_metric = self.jmh_metric(
-            100.0, "ops/s", samples=[float("nan"), 100.0, float("inf")]
+        self.assertIn(
+            "> `B` = Baseline, `C` = Candidate. Score is the median benchmark result; CV measures "
+            "variability and Error represents the relative JMH confidence interval, both "
+            "aggregated as medians across runs.",
+            markdown,
         )
-        candidate_metric = self.jmh_metric(
-            110.0, "ops/s", samples=[110.0, float("-inf")]
+        self.assertIn(
+            "> Score Change is direction-adjusted so positive is favorable; CV and Error changes "
+            "are relative changes.",
+            markdown,
         )
-
-        markdown = "\n".join(
-            regression_report.jmh_comparison_lines(
-                [self.report("dev", baseline_metric)],
-                [self.report("pr", candidate_metric)],
-            )
+        self.assertIn(
+            "| Benchmark | Parameters | Score B | Score C | Score Change | CV B | CV C | "
+            "CV Change | Error B | Error C | Error Change | Unit |",
+            markdown,
         )
-
-        self.assertIn("100.000", markdown)
-        self.assertIn("110.000", markdown)
-        self.assertIn("+10.00%", markdown)
-        self.assertEqual(2, markdown.count("| 1 |"))
+        self.assertIn(
+            "| `Queue.publish` | `capacity=1024` | 100.000 | 110.000 | +10.00% | "
+            "15.00% | 10.00% | -33.33% | 10.00% | 20.00% | +100.00% | ops/s |",
+            markdown,
+        )
 
     def test_lower_is_better_change_is_reported_as_positive(self):
         metric = self.jmh_metric(10.0, "ms/op", direction="lower")
@@ -178,15 +150,13 @@ class RegressionReportTest(unittest.TestCase):
         self.assertTrue(markdown.endswith("\n"))
 
     @staticmethod
-    def jmh_metric(
-        value, unit, direction="higher", samples=None, score_error=None
-    ):
+    def jmh_metric(value, unit, direction="higher"):
         return {
             "name": "org.apache.seatunnel.QueueBenchmark.publish[capacity=1024]",
             "benchmark": "org.apache.seatunnel.QueueBenchmark.publish",
             "kind": "jmh",
             "value": value,
-            "score_error": score_error,
+            "score_error": None,
             "sample_standard_deviation": None,
             "relative_score_error": None,
             "unit": unit,
@@ -194,7 +164,7 @@ class RegressionReportTest(unittest.TestCase):
             "mode": "thrpt" if direction == "higher" else "avgt",
             "params": {"capacity": "1024"},
             "forks": 1,
-            "samples": [value] if samples is None else samples,
+            "samples": [value],
         }
 
     @staticmethod

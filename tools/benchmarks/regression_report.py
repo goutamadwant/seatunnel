@@ -20,7 +20,6 @@
 
 import argparse
 import json
-import math
 import pathlib
 import statistics
 
@@ -371,41 +370,22 @@ def median_value(metrics, target_unit=None):
     return statistics.median(values) if values else None
 
 
-def jmh_sample_values(metrics, target_unit=None):
-    values = []
-    for metric in metrics:
-        unit = target_unit or metric["unit"]
-        samples = metric.get("samples") or [metric.get("value")]
-        for sample in samples:
-            if sample is None:
-                continue
-            sample = float(sample)
-            if math.isfinite(sample):
-                values.append(convert_unit(sample, metric["unit"], unit))
-    return values
+def median_statistic(metrics, statistic):
+    values = [statistic(metric) for metric in metrics]
+    values = [value for value in values if value is not None]
+    return statistics.median(values) if values else None
 
 
-def pooled_coefficient_of_variation(values):
-    if len(values) < 2:
+def relative_change(baseline, candidate):
+    if baseline in (None, 0.0) or candidate is None:
         return None
-    mean = statistics.mean(values)
-    if mean == 0.0:
-        return None
-    return statistics.stdev(values) / abs(mean) * 100.0
-
-
-def maximum_relative_error(metrics):
-    values = [relative_error(metric) for metric in metrics]
-    finite_values = [
-        value for value in values if value is not None and math.isfinite(value)
-    ]
-    return max(finite_values) if finite_values else None
+    return (candidate / baseline - 1.0) * 100.0
 
 
 def adjusted_change(baseline, candidate, direction):
-    if baseline in (None, 0.0) or candidate is None:
+    raw = relative_change(baseline, candidate)
+    if raw is None:
         return None
-    raw = (candidate / baseline - 1.0) * 100.0
     return -raw if direction == "lower" else raw
 
 
@@ -428,12 +408,11 @@ def jmh_comparison_lines(baselines, candidates):
     lines = [
         "### JMH comparison",
         "",
-        "Mean, median, and `CV` use all raw measurement samples from the compared runs. "
-        "`Max Error` is the largest per-run JMH confidence-interval half-width as a percentage "
-        "of Score; use it with `CV` to identify unstable comparisons.",
+        "> `B` = Baseline, `C` = Candidate. Score is the median benchmark result; CV measures variability and Error represents the relative JMH confidence interval, both aggregated as medians across runs.",
+        "> Score Change is direction-adjusted so positive is favorable; CV and Error changes are relative changes.",
         "",
-        "| Benchmark | Parameters | Baseline mean | Baseline median | Baseline max Error | Baseline CV | Baseline N | Candidate mean | Candidate median | Candidate max Error | Candidate CV | Candidate N | Change | Unit |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| Benchmark | Parameters | Score B | Score C | Score Change | CV B | CV C | CV Change | Error B | Error C | Error Change | Unit |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     names.sort(
         key=lambda name: jmh_sort_key(
@@ -445,33 +424,25 @@ def jmh_comparison_lines(baselines, candidates):
         candidate_group = candidate_metrics.get(name, [])
         metric = (candidate_group or baseline_group)[0]
         target_unit = (candidate_group or baseline_group)[0]["unit"]
-        baseline_samples = jmh_sample_values(baseline_group, target_unit)
-        candidate_samples = jmh_sample_values(candidate_group, target_unit)
-        baseline_mean = statistics.mean(baseline_samples) if baseline_samples else None
-        baseline = statistics.median(baseline_samples) if baseline_samples else None
-        candidate_mean = statistics.mean(candidate_samples) if candidate_samples else None
-        candidate = statistics.median(candidate_samples) if candidate_samples else None
+        baseline = median_value(baseline_group, target_unit)
+        candidate = median_value(candidate_group, target_unit)
+        baseline_cv = median_statistic(baseline_group, coefficient_of_variation)
+        candidate_cv = median_statistic(candidate_group, coefficient_of_variation)
+        baseline_error = median_statistic(baseline_group, relative_error)
+        candidate_error = median_statistic(candidate_group, relative_error)
         lines.append(
-            "| `{}` | `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+            "| `{}` | `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
                 short_benchmark_name(metric),
                 compact_params(metric.get("params", {})),
-                format_number(baseline_mean),
                 format_number(baseline),
-                format_percent(maximum_relative_error(baseline_group), signed=False),
-                format_percent(
-                    pooled_coefficient_of_variation(baseline_samples),
-                    signed=False,
-                ),
-                len(baseline_samples),
-                format_number(candidate_mean),
                 format_number(candidate),
-                format_percent(maximum_relative_error(candidate_group), signed=False),
-                format_percent(
-                    pooled_coefficient_of_variation(candidate_samples),
-                    signed=False,
-                ),
-                len(candidate_samples),
                 format_percent(adjusted_change(baseline, candidate, metric["direction"])),
+                format_percent(baseline_cv, signed=False),
+                format_percent(candidate_cv, signed=False),
+                format_percent(relative_change(baseline_cv, candidate_cv)),
+                format_percent(baseline_error, signed=False),
+                format_percent(candidate_error, signed=False),
+                format_percent(relative_change(baseline_error, candidate_error)),
                 target_unit,
             )
         )
@@ -610,8 +581,7 @@ def comparison_lines(baselines, candidates):
         "- Runner image: `{}`".format(environment.get("runner_image", "unknown")),
         "- CPU: `{}`".format(environment.get("cpu_model", "unknown")),
         "",
-        "> Baseline and candidate ran alternately on the same worker. Positive adjusted change is "
-        "favorable, but this observational report does not enforce a regression threshold.",
+        "> Baseline and candidate ran alternately on the same worker.",
     ]
     for section in (
         jmh_comparison_lines(baselines, candidates),
