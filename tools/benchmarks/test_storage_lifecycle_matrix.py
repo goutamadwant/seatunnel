@@ -110,6 +110,16 @@ class StorageLifecycleMatrixTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             matrix.plan("comparison", 0, 1)
 
+    def test_ci_smoke_preserves_both_timing_contracts(self):
+        workflow = (Path(__file__).parents[2] / ".github/workflows/backend.yml").read_text()
+        smoke = workflow.split("      - name: Run benchmark validation\n", 1)[1].split(
+            "\n  benchmark-tools-test:", 1)[0]
+        self.assertIn("-e 'IMapDagStorageLifecycleBenchmark\\.'", smoke)
+        self.assertIn("-f 1 -wi 0 -i 1 -r 1s -foe true", smoke)
+        self.assertIn("python3 tools/benchmarks/storage_lifecycle_matrix.py", smoke)
+        self.assertIn("--purpose smoke", smoke)
+        self.assertIn('--output "${result_dir}/storage-lifecycle"', smoke)
+
     def test_failed_launcher_also_kills_remaining_fork_group(self):
         process = Mock(pid=123, **{"wait.return_value": 1})
         with patch.object(matrix.subprocess, "Popen", return_value=process), \

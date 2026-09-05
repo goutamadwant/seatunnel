@@ -566,8 +566,15 @@ jobs:
           java -Dseatunnel.benchmark.result.dir="${result_dir}" \
             -jar seatunnel-benchmarks/target/benchmarks.jar \
             '.*' \
+            -e 'IMapDagStorageLifecycleBenchmark\.' \
             -f 1 -wi 0 -i 1 -r 1s -foe true
           find "${result_dir}" -name '*.json' -print -quit | grep -q .
+          # Lifecycle measurements require separate startup and post-readiness warmup settings.
+          python3 tools/benchmarks/storage_lifecycle_matrix.py \
+            --purpose smoke \
+            --baseline seatunnel-benchmarks/target/benchmarks.jar \
+            --candidate seatunnel-benchmarks/target/benchmarks.jar \
+            --output "${result_dir}/storage-lifecycle"
 
   benchmark-tools-test:
     needs: [ changes, sanity-check ]
