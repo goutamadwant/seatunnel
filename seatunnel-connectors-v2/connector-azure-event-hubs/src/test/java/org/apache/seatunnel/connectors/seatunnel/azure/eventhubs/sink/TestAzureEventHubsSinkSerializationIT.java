@@ -38,7 +38,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /** Runs after packaging to exercise relocated SDK method descriptors, without Azure access. */
-class AzureEventHubsSinkSerializationIT {
+class TestAzureEventHubsSinkSerializationIT {
 
     @Test
     void shadedSinkRoundTripsBetweenWorkerClassLoaders() throws Exception {
@@ -116,7 +116,9 @@ class AzureEventHubsSinkSerializationIT {
     private static final class ConnectorClassLoader extends URLClassLoader {
 
         private ConnectorClassLoader(URL artifact) {
-            super(new URL[] {artifact}, AzureEventHubsSinkSerializationIT.class.getClassLoader());
+            super(
+                    new URL[] {artifact},
+                    TestAzureEventHubsSinkSerializationIT.class.getClassLoader());
         }
 
         @Override
