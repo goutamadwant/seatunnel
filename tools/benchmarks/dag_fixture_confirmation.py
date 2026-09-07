@@ -16,12 +16,15 @@
 """Fork-only, fixed-protocol confirmation for the finished DAG fixture correction."""
 
 import argparse
+import configparser
+import datetime
 import hashlib
 import json
 import math
 import os
 import pathlib
 import platform
+import re
 import shutil
 import signal
 import statistics
@@ -75,13 +78,41 @@ def sha256(path):
     return result.hexdigest()
 
 
-def check_classes(baseline, candidate):
+def version_properties(jar):
+    with zipfile.ZipFile(jar) as archive:
+        text = archive.read('zeta.version.properties').decode('utf-8')
+    parser = configparser.ConfigParser(interpolation=None, delimiters=('=',))
+    parser.optionxform = str
+    parser.read_string('[version]\n' + text)
+    return dict(parser['version'])
+
+
+def check_version_metadata(old, new, expected_revisions=None):
+    fields = {'project.version', 'git.commit.id', 'git.commit.id.abbrev', 'git.commit.time', 'git.build.time'}
+    require(set(old) == fields and set(new) == fields, 'Unexpected version metadata fields')
+    require(old['project.version'] and old['project.version'] == new['project.version'], 'Project version changed')
+    for role, values in [('baseline', old), ('candidate', new)]:
+        commit = values['git.commit.id']
+        require(re.fullmatch('[0-9a-f]{40}', commit), 'Unresolved version commit')
+        require(7 <= len(values['git.commit.id.abbrev']) <= 40
+                and commit.startswith(values['git.commit.id.abbrev']), 'Invalid abbreviated commit')
+        if expected_revisions:
+            require(commit == expected_revisions[role], 'Version metadata and checked-out revision disagree')
+        for field in ['git.commit.time', 'git.build.time']:
+            datetime.datetime.strptime(values[field], '%Y-%m-%dT%H:%M:%S%z')
+
+
+def check_classes(baseline, candidate, expected_revisions=None):
     with zipfile.ZipFile(baseline) as old, zipfile.ZipFile(candidate) as new:
         old_names, new_names = set(old.namelist()), set(new.namelist())
         require(old_names == new_names, 'Packaged entry inventory changed')
         changed = sorted(name for name in old_names if not name.endswith('/')
                          and old.read(name) != new.read(name))
-    require(changed and set(changed) <= ALLOWED_CLASSES,
+    metadata = {'zeta.version.properties'} if 'zeta.version.properties' in changed else set()
+    if metadata:
+        check_version_metadata(version_properties(baseline), version_properties(candidate), expected_revisions)
+    class_changes = set(changed) - metadata
+    require(class_changes and class_changes <= ALLOWED_CLASSES,
             'Unexpected packaged differences: ' + repr(changed))
     return changed
 
@@ -154,8 +185,13 @@ def collect(args):
     version = subprocess.run([java, '-version'], check=True, capture_output=True, text=True).stderr
     require(('version "1.8.' if args.java_version == '8' else 'version "11.') in version, 'Incorrect native JDK')
     hashes = {role: sha256(path) for role, path in artifacts.items()}
+    metadata = {role: version_properties(path) for role, path in artifacts.items()}
+    save(output / 'version-metadata.json', metadata)
+    revisions = {'baseline': os.environ['BASELINE_SHA'], 'candidate': os.environ['CANDIDATE_SHA']}
+    check_version_metadata(metadata['baseline'], metadata['candidate'], revisions)
     identity = {'jar_sha256': hashes, 'java_version': version, 'machine': platform.uname()._asdict(),
-                'cpu_count': os.cpu_count(), 'changed_jar_entries': check_classes(*artifacts.values()),
+                'cpu_count': os.cpu_count(), 'changed_jar_entries': check_classes(*artifacts.values(), revisions),
+                'version_metadata': metadata,
                 'protocol': {'forks': 3, 'warmups': 3, 'measurements': 5, 'writes_per_batch': 100},
                 'revisions': {key: os.environ.get(key) for key in ['BASELINE_SHA', 'CANDIDATE_SHA', 'GITHUB_SHA', 'GITHUB_RUN_ID']}}
     save(output / 'artifacts.json', identity)

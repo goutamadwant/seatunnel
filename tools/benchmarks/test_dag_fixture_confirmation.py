@@ -19,10 +19,38 @@ import tempfile
 import unittest
 import zipfile
 
-from dag_fixture_confirmation import ALLOWED_CLASSES, FLAGS, check_classes, plan, validate
+from dag_fixture_confirmation import ALLOWED_CLASSES, FLAGS, check_classes, check_version_metadata, plan, validate
 
 
 class ConfirmationTest(unittest.TestCase):
+    def versions(self):
+        old = {'project.version': '3.0.0-SNAPSHOT', 'git.commit.id': 'a' * 40,
+               'git.commit.id.abbrev': 'a' * 7, 'git.commit.time': '2026-09-01T00:00:00+0000',
+               'git.build.time': '2026-09-07T00:00:00+0000'}
+        new = dict(old, **{'git.commit.id': 'b' * 40, 'git.commit.id.abbrev': 'b' * 7,
+                         'git.build.time': '2026-09-07T01:00:00+0000'})
+        return old, new
+
+    def test_only_verified_provenance_metadata_may_differ(self):
+        old, new = self.versions()
+        check_version_metadata(old, new, {'baseline': 'a' * 40, 'candidate': 'b' * 40})
+        for field, value in [('project.version', '4.0.0'), ('git.commit.id', 'c' * 40),
+                             ('git.commit.id.abbrev', 'c' * 7), ('extra.setting', 'true')]:
+            changed = dict(new, **{field: value})
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                check_version_metadata(old, changed, {'baseline': 'a' * 40, 'candidate': 'b' * 40})
+
+    def test_packaged_provenance_does_not_weaken_class_guard(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old, new = [pathlib.Path(directory) / name for name in ['old.jar', 'new.jar']]
+            fixture = sorted(ALLOWED_CLASSES)[0]
+            for jar, props in zip([old, new], self.versions()):
+                with zipfile.ZipFile(jar, 'w') as archive:
+                    archive.writestr(fixture, jar.name)
+                    archive.writestr('zeta.version.properties', '\n'.join(k + '=' + v for k, v in props.items()))
+            changed = check_classes(old, new, {'baseline': 'a' * 40, 'candidate': 'b' * 40})
+            self.assertEqual(set(changed), {fixture, 'zeta.version.properties'})
+
     def record(self):
         return {'benchmark': 'org.apache.seatunnel.benchmark.IMapDagStorageBenchmark.finishedJobDagStore',
                 'jmhVersion': '1.37', 'mode': 'ss', 'forks': 3, 'threads': 1,
