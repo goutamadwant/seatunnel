@@ -24,7 +24,9 @@ public enum AzureEventHubsConnectorErrorCode implements SeaTunnelErrorCode {
     PARTITION_DISCOVERY_FAILED("AzureEventHubs-03", "Discover Event Hubs partitions failed"),
     READ_FAILED("AzureEventHubs-04", "Read Azure Event Hubs event failed"),
     DESERIALIZATION_FAILED("AzureEventHubs-05", "Deserialize Azure Event Hubs event failed"),
-    CLOSE_FAILED("AzureEventHubs-06", "Close Azure Event Hubs client failed");
+    CLOSE_FAILED("AzureEventHubs-06", "Close Azure Event Hubs client failed"),
+    WRITE_FAILED("AzureEventHubs-07", "Write Azure Event Hubs event failed"),
+    MESSAGE_TOO_LARGE("AzureEventHubs-08", "Event exceeds the Azure Event Hubs batch byte limit");
 
     private final String code;
     private final String description;

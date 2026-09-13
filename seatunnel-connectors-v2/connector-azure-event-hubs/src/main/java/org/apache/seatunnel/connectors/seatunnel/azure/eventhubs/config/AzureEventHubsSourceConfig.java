@@ -23,6 +23,9 @@ import lombok.Getter;
 
 import java.io.Serializable;
 
+import static org.apache.seatunnel.connectors.seatunnel.azure.eventhubs.config.AzureEventHubsConfigValidator.rejectEntityPath;
+import static org.apache.seatunnel.connectors.seatunnel.azure.eventhubs.config.AzureEventHubsConfigValidator.requireNonBlank;
+
 /** Immutable runtime configuration for the Azure Event Hubs source. */
 @Getter
 @Builder
@@ -63,10 +66,7 @@ public class AzureEventHubsSourceConfig implements Serializable {
         requireNonBlank(connectionString, AzureEventHubsSourceOptions.CONNECTION_STRING.key());
         requireNonBlank(eventHubName, AzureEventHubsSourceOptions.EVENT_HUB_NAME.key());
         requireNonBlank(consumerGroup, AzureEventHubsSourceOptions.CONSUMER_GROUP.key());
-        if (connectionStringContainsEntityPath(connectionString)) {
-            throw new IllegalArgumentException(
-                    "Option 'connection_string' must not include EntityPath; configure 'event_hub_name' separately");
-        }
+        rejectEntityPath(connectionString);
         if (format == AzureEventHubsMessageFormat.TEXT && fieldDelimiter.isEmpty()) {
             throw new IllegalArgumentException("Option 'field_delimiter' cannot be empty");
         }
@@ -83,23 +83,6 @@ public class AzureEventHubsSourceConfig implements Serializable {
         if (prefetchCount < maxBatchSize) {
             throw new IllegalArgumentException(
                     "Option 'prefetch_count' must be greater than or equal to max_batch_size");
-        }
-    }
-
-    private static boolean connectionStringContainsEntityPath(String connectionString) {
-        for (String segment : connectionString.split(";")) {
-            int separator = segment.indexOf('=');
-            if (separator > 0
-                    && "entitypath".equalsIgnoreCase(segment.substring(0, separator).trim())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static void requireNonBlank(String value, String option) {
-        if (value == null || value.trim().isEmpty()) {
-            throw new IllegalArgumentException("Option '" + option + "' cannot be blank");
         }
     }
 }

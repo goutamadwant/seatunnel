@@ -35,7 +35,7 @@ public class AzureEventHubsSourceOptions extends ConnectorCommonOptions {
             Options.key("event_hub_name")
                     .stringType()
                     .noDefaultValue()
-                    .withDescription("Name of the Event Hub to consume.");
+                    .withDescription("Name of the Event Hub.");
 
     public static final Option<String> CONSUMER_GROUP =
             Options.key("consumer_group")
