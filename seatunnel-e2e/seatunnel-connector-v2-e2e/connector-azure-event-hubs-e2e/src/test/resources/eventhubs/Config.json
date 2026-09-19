@@ -6,6 +6,26 @@
         "Name": "emulatorNs1",
         "Entities": [
           {
+            "Name": "sink-bytes",
+            "PartitionCount": "2",
+            "ConsumerGroups": [{"Name": "seatunnel"}]
+          },
+          {
+            "Name": "sink-checkpoint",
+            "PartitionCount": "2",
+            "ConsumerGroups": [{"Name": "seatunnel"}]
+          },
+          {
+            "Name": "sink-json",
+            "PartitionCount": "2",
+            "ConsumerGroups": [{"Name": "seatunnel"}]
+          },
+          {
+            "Name": "sink-text",
+            "PartitionCount": "2",
+            "ConsumerGroups": [{"Name": "seatunnel"}]
+          },
+          {
             "Name": "events",
             "PartitionCount": "2",
             "ConsumerGroups": [
