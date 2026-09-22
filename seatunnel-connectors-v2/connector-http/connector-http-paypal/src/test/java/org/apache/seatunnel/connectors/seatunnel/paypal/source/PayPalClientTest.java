@@ -48,6 +48,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPOutputStream;
 
@@ -400,29 +401,36 @@ class PayPalClientTest {
     @Test
     void closeWakesRetryWait() throws Exception {
         options.put("retry_delay_ms", 60000);
-        replies.add(new Reply(503, "{}"));
+        Reply unavailable = new Reply(503, "");
+        // The client aborts retryable responses after headers, so do not wait for a body write.
+        unavailable.bodyless = true;
+        replies.add(unavailable);
         PayPalClient transport = client();
-        CountDownLatch complete = new CountDownLatch(1);
-        Thread worker =
-                new Thread(
-                        () -> {
-                            try {
-                                assertThrows(Exception.class, () -> transport.page(1));
-                            } finally {
-                                complete.countDown();
-                            }
-                        });
-        worker.start();
-        assertTrue(arrived.await(NETWORK_WAIT_SECONDS, TimeUnit.SECONDS));
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(NETWORK_WAIT_SECONDS);
-        while (worker.getState() != Thread.State.TIMED_WAITING && System.nanoTime() < deadline) {
-            Thread.sleep(10);
+        FutureTask<Exception> result =
+                new FutureTask<>(() -> assertThrows(Exception.class, () -> transport.page(1)));
+        Thread worker = new Thread(result);
+        try {
+            worker.start();
+            assertTrue(arrived.await(NETWORK_WAIT_SECONDS, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(NETWORK_WAIT_SECONDS);
+            while (worker.getState() != Thread.State.TIMED_WAITING
+                    && !result.isDone()
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertFalse(result.isDone(), "Request completed before close");
+            assertEquals(Thread.State.TIMED_WAITING, worker.getState());
+            transport.close();
+            assertEquals(
+                    "PayPal: Request cancelled",
+                    result.get(NETWORK_WAIT_SECONDS, TimeUnit.SECONDS).getMessage());
+            assertEquals(1, requests.size());
+        } finally {
+            transport.close();
+            result.cancel(true);
+            worker.join(TimeUnit.SECONDS.toMillis(NETWORK_WAIT_SECONDS));
+            assertFalse(worker.isAlive(), "Request worker did not terminate");
         }
-        assertEquals(Thread.State.TIMED_WAITING, worker.getState());
-        transport.close();
-        assertTrue(complete.await(NETWORK_WAIT_SECONDS, TimeUnit.SECONDS));
-        worker.join();
-        assertEquals(1, requests.size());
     }
 
     @Test

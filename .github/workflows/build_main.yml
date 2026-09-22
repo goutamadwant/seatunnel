@@ -23,6 +23,7 @@ on:
   push:
     branches-ignore:
       - 'gh-readonly-queue/**'
+      - 'test/ci-fixtures-validation'
 
 jobs:
   call-build-and-test:
