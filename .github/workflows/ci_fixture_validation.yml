@@ -161,7 +161,7 @@ jobs:
           New-Item -ItemType Directory -Force validation-results | Out-Null
           git rev-parse HEAD
           java -version
-          & .\mvnw.cmd -B -ntp -T 1 -Pci -pl :connector-http-paypal -am -DskipTests=true -DskipUT=true -DskipIT=true -Dlicense.skipAddThirdParty=true install 2>&1 | Tee-Object validation-results/dependencies.log
+          & .\mvnw.cmd -B -ntp -T 1 -Pci -pl :connector-http-paypal -am -DskipTests=true -DskipUT=true -DskipIT=true -D"license.skipAddThirdParty"=true install 2>&1 | Tee-Object validation-results/dependencies.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify the full PayPal module
         shell: pwsh
