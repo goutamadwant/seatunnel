@@ -38,3 +38,4 @@ The AI CLI ships as the `seatunnel-cli` module inside the main SeaTunnel reposit
 ## Relationship to Other AI Tooling
 
 The AI CLI is the built-in, runtime-integrated tool. Complementary external tooling lives in the [SeaTunnel Tools](https://github.com/apache/seatunnel-tools) repository: the [SeaTunnel Skill](../tools/seatunnel-skill.md) (Claude integration for IDE-level assistance), the [MCP Server](../tools/seatunnel-mcp.md) (programmatic LLM access to SeaTunnel resources), and [x2seatunnel](../tools/x2seatunnel.md) (config conversion).
+
