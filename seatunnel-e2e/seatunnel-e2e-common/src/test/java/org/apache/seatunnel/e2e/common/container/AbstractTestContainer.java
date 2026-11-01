@@ -33,6 +33,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import static org.apache.seatunnel.e2e.common.util.ContainerUtil.PROJECT_ROOT_PATH;
@@ -286,6 +287,16 @@ public abstract class AbstractTestContainer implements TestContainer {
     protected Container.ExecResult executeJob(
             GenericContainer<?> container, String confFile, String jobId, List<String> variables)
             throws IOException, InterruptedException {
+        return executeJob(container, confFile, jobId, variables, Collections.emptyList());
+    }
+
+    protected Container.ExecResult executeJob(
+            GenericContainer<?> container,
+            String confFile,
+            String jobId,
+            List<String> variables,
+            List<String> engineOptions)
+            throws IOException, InterruptedException {
         final String confInContainerPath = copyConfigFileToContainer(container, confFile);
         // copy connectors
         copyConnectorJarToContainer(
@@ -316,6 +327,7 @@ public abstract class AbstractTestContainer implements TestContainer {
                     });
         }
         command.addAll(extraStartShellCommands);
+        command.addAll(engineOptions);
         return executeCommand(container, command);
     }
 

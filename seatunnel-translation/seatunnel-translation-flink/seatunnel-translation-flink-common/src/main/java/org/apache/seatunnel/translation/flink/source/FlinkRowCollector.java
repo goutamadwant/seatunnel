@@ -35,7 +35,14 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.util.HashMap;
 
-/** The implementation of {@link Collector} for flink engine. */
+/**
+ * The implementation of {@link Collector} for the Flink engine.
+ *
+ * <p>Rows use generic SeaTunnelRow type information and are forwarded without schema-dependent
+ * conversion. The source deserializer and downstream schema operators restore their own state, so
+ * this collector intentionally inherits the local schema restore no-op. Restoring the collector
+ * must not emit another schema-change event to those operators.
+ */
 @Slf4j
 public class FlinkRowCollector implements Collector<SeaTunnelRow> {
 

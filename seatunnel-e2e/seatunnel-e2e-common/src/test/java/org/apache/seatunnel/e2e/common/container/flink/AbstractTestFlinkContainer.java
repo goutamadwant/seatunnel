@@ -37,6 +37,7 @@ import lombok.extern.slf4j.Slf4j;
 import java.io.IOException;
 import java.nio.file.Paths;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -204,6 +205,28 @@ public abstract class AbstractTestFlinkContainer extends AbstractTestContainer {
             throws IOException, InterruptedException {
         log.info("test in container: {}", identifier());
         return executeJob(jobManager, confFile, null, variables);
+    }
+
+    /** Submits a detached job, optionally restoring a completed Flink savepoint. */
+    public Container.ExecResult executeJobDetached(
+            String confFile, String savepoint, List<String> variables)
+            throws IOException, InterruptedException {
+        List<String> options = new ArrayList<>();
+        options.add("-d");
+        if (savepoint != null) {
+            options.add("-Dexecution.savepoint.path=" + savepoint);
+        }
+        return executeJob(jobManager, confFile, null, variables, options);
+    }
+
+    /** Kills the worker without allowing it to finish pending checkpoint work. */
+    public void killTaskManager() {
+        taskManager.getDockerClient().killContainerCmd(taskManager.getContainerId()).exec();
+    }
+
+    /** Restarts the same worker container after a failure injection. */
+    public void restartTaskManager() {
+        taskManager.getDockerClient().startContainerCmd(taskManager.getContainerId()).exec();
     }
 
     @Override
