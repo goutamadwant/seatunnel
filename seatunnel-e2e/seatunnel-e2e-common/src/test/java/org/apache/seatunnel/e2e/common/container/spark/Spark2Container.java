@@ -53,6 +53,7 @@ public class Spark2Container extends AbstractTestSparkContainer {
      */
     @Override
     protected String getDockerImage() {
+        if (Boolean.getBoolean("seatunnel.spark2.java8")) return "tyrantlucifer/spark:2.4.6";
         return EngineImageJdkUpgrader.toJava11("tyrantlucifer/spark:2.4.6");
     }
 

@@ -79,6 +79,7 @@
 
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <java.version>11</java.version>
+        <seatunnel.spark2.java8>false</seatunnel.spark2.java8>
         <scala.version>2.12.15</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
@@ -836,6 +837,9 @@
                     <configuration>
                         <argLine>${surefire.jvm.args} ${surefire.module.args}</argLine>
                         <skip>${skipIT}</skip>
+                        <systemPropertyVariables>
+                            <seatunnel.spark2.java8>${seatunnel.spark2.java8}</seatunnel.spark2.java8>
+                        </systemPropertyVariables>
                     </configuration>
                     <executions>
                         <execution>
@@ -1205,6 +1209,19 @@
     </issueManagement>
 
     <profiles>
+        <!-- Spark 2.4 requires Java 8 at runtime; the Maven build and its tests still use Java 11+. -->
+        <profile>
+            <id>spark2-java8</id>
+            <properties>
+                <maven.compiler.release>8</maven.compiler.release>
+                <maven.compiler.source>8</maven.compiler.source>
+                <maven.compiler.target>8</maven.compiler.target>
+                <maven.compiler.testRelease>11</maven.compiler.testRelease>
+                <maven.compiler.testSource>11</maven.compiler.testSource>
+                <maven.compiler.testTarget>11</maven.compiler.testTarget>
+                <seatunnel.spark2.java8>true</seatunnel.spark2.java8>
+            </properties>
+        </profile>
         <profile>
             <id>release</id>
             <activation>

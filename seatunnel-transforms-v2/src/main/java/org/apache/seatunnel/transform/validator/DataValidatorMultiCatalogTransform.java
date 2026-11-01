@@ -74,7 +74,7 @@ public class DataValidatorMultiCatalogTransform extends AbstractMultiCatalogMapT
     private ReadonlyConfig withGlobalPolicies(ReadonlyConfig tableConfig) {
         Map<String, Object> mergedOptions = new HashMap<>(tableConfig.getSourceMap());
         for (Option<?> option : GLOBAL_POLICY_OPTIONS) {
-            if (tableConfig.getOptional(option).isEmpty()) {
+            if (!tableConfig.getOptional(option).isPresent()) {
                 transformLevelConfig
                         .getOptional(option)
                         .ifPresent(value -> mergedOptions.put(option.key(), value));

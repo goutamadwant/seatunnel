@@ -61,6 +61,12 @@ public class SparkExecution implements TaskExecution {
             sinkPluginExecuteProcessor;
 
     public SparkExecution(Config config) {
+        if (config.getConfig(Constants.ENV)
+                .hasPath(SparkCheckpointOptions.CHECKPOINT_LOCATION.key())) {
+            SparkCheckpointOptions.validateRuntime(
+                    org.apache.spark.package$.MODULE$.SPARK_VERSION(),
+                    System.getProperty("java.specification.version"));
+        }
         this.sparkRuntimeEnvironment = SparkRuntimeEnvironment.getInstance(config);
         JobContext jobContext = new JobContext();
         jobContext.setJobMode(RuntimeEnvironment.getJobMode(config));
