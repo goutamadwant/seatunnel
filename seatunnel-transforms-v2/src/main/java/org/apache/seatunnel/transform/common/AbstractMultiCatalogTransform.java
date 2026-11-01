@@ -182,9 +182,9 @@ public abstract class AbstractMultiCatalogTransform implements SeaTunnelTransfor
      * entry.
      */
     protected boolean isSingleTableMode(ReadonlyConfig config) {
-        return config.getOptional(TransformCommonOptions.MULTI_TABLES)
+        return !config.getOptional(TransformCommonOptions.MULTI_TABLES)
                 .filter(tableTransforms -> !tableTransforms.isEmpty())
-                .isEmpty();
+                .isPresent();
     }
 
     /** Whether any of the given options is configured. */

@@ -143,3 +143,13 @@ Source 将一个区间的数据与结束状态一起持久化，完成后才允�
 当前恢复模式不保证 driver 崩溃后的端到端 exactly-once。需要恢复 writer state 的 sink（包括 JDBC XA）会在保存模式处理和 query 启动前被拒绝；它们需要单独的持久化 sink 恢复协议。
 
 关闭结构变更传播时，已完成的 DATA 检查点恢复 Source 位点，查询分析保留实时发现的表结构。已经发布但尚未提交的区间保持不变；如果区间中已编码记录的结构与当前发现的结构不一致，恢复将失败，避免按错误布局解码记录。严格空的 DATA 区间可以重放原有位点和状态。存在待处理结构边界时，也不允许关闭传播。
+
+### Spark 2.4 运行环境
+
+Spark 2.4 需要 Java 8 运行环境。使用 Java 11 及以上的构建 JDK，通过 `spark2-java8` profile 构建 Spark 2 starter 和所有连接器依赖。该 profile 保留 Java 11 测试字节码，并选择使用 Java 8 的 Spark 2 集成测试镜像。请使用与默认 Java 11 发行版不同的构建目录。
+
+```shell
+./mvnw -Pspark2-java8 -pl seatunnel-core/seatunnel-spark-starter/seatunnel-spark-2-starter,seatunnel-connectors-v2/connector-cdc/connector-cdc-mysql,seatunnel-connectors-v2/connector-jdbc -am package
+```
+
+使用 Java 8 运行生成的 Spark 2 starter 和所有连接器依赖，不要混入默认发行版的 Java 11 jar。由于 Spark 的闭包清理器无法读取 Java 11 字节码，Spark 2 检查点恢复会在创建 Source 或 Sink 任务之前拒绝 Java 11 及以上运行环境。Spark 3 使用默认发行版。

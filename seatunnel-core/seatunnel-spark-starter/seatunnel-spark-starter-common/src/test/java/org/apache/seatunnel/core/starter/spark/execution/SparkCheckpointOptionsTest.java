@@ -29,6 +29,18 @@ import static org.mockito.Mockito.when;
 
 class SparkCheckpointOptionsTest {
     @Test
+    void rejectsIncompatibleSpark2RuntimeBeforePlanningSinkWork() {
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+                () -> SparkCheckpointOptions.validateRuntime("2.4.6", "1.8"));
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+                () -> SparkCheckpointOptions.validateRuntime("3.3.0", "11"));
+        for (String javaVersion : new String[] {"11", "17", "21"})
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    UnsupportedOperationException.class,
+                    () -> SparkCheckpointOptions.validateRuntime("2.4.6", javaVersion));
+    }
+
+    @Test
     void rejectsRequiredWriterStateBeforeStartingAQuery() {
         SeaTunnelSink<?, ?, ?, ?> sink = mock(SeaTunnelSink.class);
         when(sink.requiresWriterState()).thenReturn(true);

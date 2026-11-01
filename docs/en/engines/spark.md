@@ -139,3 +139,13 @@ Schema reconciliation requires a sink implementing `SupportSchemaEvolutionRecove
 The checkpoint reader accepts legacy interval journals without table-level schema metadata using the configured fixed schema. Changing routing, an incompatible analyzed schema or parallelism fails restore before emitting records. Checkpoints made by the older incomplete micro-batch implementation do not contain the durable interval journal and cannot be restored with this format; use a new directory for a new job.
 
 When schema propagation is disabled, a completed DATA checkpoint restores source offsets while query analysis retains live-discovered catalogs. An already published pending interval remains immutable: if it contains typed rows whose encoded schema differs from live discovery, recovery rejects it rather than decoding rows with the wrong layout. An exact empty DATA interval can replay its unchanged offset and state. Pending schema boundaries also reject disabling propagation.
+
+### Spark 2.4 runtime
+
+Spark 2.4 requires Java 8 at runtime. Build its starter and connector dependencies with the `spark2-java8` profile using a Java 11+ build JDK; the profile keeps test bytecode at Java 11 and selects the Java 8 Spark 2 integration image. Use a separate build directory from the default Java 11 distribution.
+
+```shell
+./mvnw -Pspark2-java8 -pl seatunnel-core/seatunnel-spark-starter/seatunnel-spark-2-starter,seatunnel-connectors-v2/connector-cdc/connector-cdc-mysql,seatunnel-connectors-v2/connector-jdbc -am package
+```
+
+Run the resulting Spark 2 starter and all connector dependencies with Java 8. Do not mix default Java 11 jars into that runtime. Spark 2 checkpoint recovery rejects Java 11+ before starting source or sink tasks, because Spark's closure cleaner cannot read Java 11 class files. Spark 3 uses the default distribution.

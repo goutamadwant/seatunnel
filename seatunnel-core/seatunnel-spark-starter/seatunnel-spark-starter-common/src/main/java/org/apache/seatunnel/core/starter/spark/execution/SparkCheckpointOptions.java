@@ -38,5 +38,13 @@ public final class SparkCheckpointOptions {
         }
     }
 
+    static void validateRuntime(String sparkVersion, String javaVersion) {
+        if (sparkVersion.startsWith("2.")
+                && !("1.8".equals(javaVersion) || "8".equals(javaVersion))) {
+            throw new UnsupportedOperationException(
+                    "Spark 2.4 checkpoint recovery requires Java 8 runtime and Java 8 artifacts. Build with the spark2-java8 profile; the default Java 11 distribution cannot run Spark 2.4 recovery.");
+        }
+    }
+
     private SparkCheckpointOptions() {}
 }
