@@ -17,6 +17,9 @@
 
 package org.apache.seatunnel.translation.spark.source.partition.micro;
 
+import org.apache.seatunnel.shade.com.fasterxml.jackson.annotation.JsonCreator;
+import org.apache.seatunnel.shade.com.fasterxml.jackson.annotation.JsonProperty;
+
 import org.apache.seatunnel.common.utils.JsonUtils;
 
 import org.apache.spark.sql.connector.read.streaming.Offset;
@@ -32,7 +35,8 @@ public class SeaTunnelOffset extends Offset implements Serializable {
 
     private final long checkpointId;
 
-    public SeaTunnelOffset(long checkpointId) {
+    @JsonCreator
+    public SeaTunnelOffset(@JsonProperty("checkpointId") long checkpointId) {
         this.checkpointId = checkpointId;
     }
 

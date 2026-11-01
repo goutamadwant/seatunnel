@@ -155,12 +155,17 @@ public class TransformExecuteProcessor
                 registerInputTempView(pluginConfig, inputDataset);
                 String pluginOutputIdentifier =
                         ReadonlyConfig.fromConfig(pluginConfig).get(PLUGIN_OUTPUT);
+                List<SeaTunnelTransform> schemaTransforms =
+                        new ArrayList<>(dataset.getSchemaTransforms());
+                schemaTransforms.add(transform);
                 outputTables.put(
                         pluginOutputIdentifier,
                         new DatasetTableInfo(
                                 inputDataset,
                                 transform.getProducedCatalogTables(),
-                                pluginOutputIdentifier));
+                                pluginOutputIdentifier,
+                                dataset.getSourceIndex(),
+                                schemaTransforms));
             } catch (Exception e) {
                 throw new TaskExecuteException(
                         String.format(

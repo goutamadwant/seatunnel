@@ -63,7 +63,6 @@ import io.debezium.pipeline.metrics.SnapshotChangeEventSourceMetrics;
 import io.debezium.pipeline.source.spi.EventMetadataProvider;
 import io.debezium.pipeline.spi.OffsetContext;
 import io.debezium.pipeline.spi.Offsets;
-import io.debezium.relational.RelationalDatabaseConnectorConfig;
 import io.debezium.relational.Table;
 import io.debezium.relational.TableId;
 import io.debezium.relational.Tables;
@@ -78,6 +77,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -108,12 +108,12 @@ public class MySqlSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
     private MySqlPartition mySqlPartition;
     private ChangeEventQueue<DataChangeEvent> queue;
     private MySqlErrorHandler errorHandler;
-    private RelationalDatabaseConnectorConfig dbzConnectorConfig;
+    private MySqlConnectorConfig dbzConnectorConfig;
 
     public MySqlSourceFetchTaskContext(
             JdbcSourceConfig sourceConfig, JdbcDataSourceDialect dataSourceDialect) {
         super(sourceConfig, dataSourceDialect);
-        this.dbzConnectorConfig = sourceConfig.getDbzConnectorConfig();
+        this.dbzConnectorConfig = (MySqlConnectorConfig) sourceConfig.getDbzConnectorConfig();
         this.connection = createMySqlConnection(sourceConfig.getDbzConfiguration());
         this.binaryLogClient = createBinaryClient(sourceConfig.getDbzConfiguration());
         this.metadataProvider = new MySqlEventMetadataProvider();
@@ -121,6 +121,8 @@ public class MySqlSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
 
     @Override
     public void configure(SourceSplitBase sourceSplitBase) {
+        this.dbzConnectorConfig =
+                createSplitConnectorConfig(sourceConfig.getDbzConfiguration(), sourceSplitBase);
         super.registerDatabaseHistory(sourceSplitBase, connection);
 
         // initial stateful objects
@@ -192,6 +194,24 @@ public class MySqlSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
         this.errorHandler = new MySqlErrorHandler(connectorConfig, queue);
     }
 
+    static MySqlConnectorConfig createSplitConnectorConfig(
+            io.debezium.config.Configuration configuration, SourceSplitBase split) {
+        if (split.isIncrementalSplit()) {
+            // Each binlog reader restores history only for its assigned tables. Its Debezium
+            // capture filter must match that history; filtering records after decoding is too
+            // late to prevent an unknown-schema failure for a sibling reader's table map.
+            String tables =
+                    split.asIncrementalSplit().getTableIds().stream()
+                            .map(
+                                    table ->
+                                            Pattern.quote(table.toString())
+                                                    .replace(",", "\\E\\x2c\\Q"))
+                            .collect(java.util.stream.Collectors.joining(","));
+            configuration = configuration.edit().with("table.include.list", tables).build();
+        }
+        return new MySqlConnectorConfig(configuration);
+    }
+
     @Override
     public void close() {
         try {
@@ -223,7 +243,7 @@ public class MySqlSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
 
     @Override
     public MySqlConnectorConfig getDbzConnectorConfig() {
-        return (MySqlConnectorConfig) super.getDbzConnectorConfig();
+        return dbzConnectorConfig;
     }
 
     @Override
@@ -277,6 +297,30 @@ public class MySqlSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
     @Override
     public Offset getStreamOffset(SourceRecord sourceRecord) {
         return MySqlUtils.getBinlogPosition(sourceRecord);
+    }
+
+    /** Keep pending DDL, but do not replay a DDL record already included in the split cut. */
+    @Override
+    public boolean shouldEmitSchemaChange(SourceRecord record, Offset startupOffset) {
+        // Timestamp startup has not resolved a concrete binlog cut yet. Its existing fetch-task
+        // timestamp filter owns that boundary until the first checkpoint stores a real offset.
+        if (startupOffset instanceof BinlogOffset
+                && ((BinlogOffset) startupOffset).isTimestampOffset()) return true;
+        BinlogOffset position = (BinlogOffset) getStreamOffset(record);
+        BinlogOffset cut = (BinlogOffset) startupOffset;
+        if (position.getGtidSet() != null
+                && cut.getGtidSet() != null
+                && new GtidSet(position.getGtidSet()).equals(new GtidSet(cut.getGtidSet()))) {
+            // A heartbeat before QUERY and the completed QUERY can share the restart GTID set.
+            // Compare their physical positions on the same server before event/row progress.
+            // A different server has no comparable physical coordinates: retain its record.
+            if (!Objects.equals(position.getServerId(), cut.getServerId())) return true;
+            int file = position.getFilename().compareToIgnoreCase(cut.getFilename());
+            if (file != 0) return file > 0;
+            if (position.getPosition() != cut.getPosition())
+                return position.getPosition() > cut.getPosition();
+        }
+        return position.isAfter(cut);
     }
 
     /** Loads the connector's persistent offset (if present) via the given loader. */

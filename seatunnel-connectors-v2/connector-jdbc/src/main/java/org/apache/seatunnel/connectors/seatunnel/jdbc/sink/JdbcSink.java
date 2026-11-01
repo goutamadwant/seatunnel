@@ -31,7 +31,7 @@ import org.apache.seatunnel.api.sink.SinkAggregatedCommitter;
 import org.apache.seatunnel.api.sink.SinkWriter;
 import org.apache.seatunnel.api.sink.SupportMultiTableSink;
 import org.apache.seatunnel.api.sink.SupportSaveMode;
-import org.apache.seatunnel.api.sink.SupportSchemaEvolutionSink;
+import org.apache.seatunnel.api.sink.SupportSchemaEvolutionRecovery;
 import org.apache.seatunnel.api.table.catalog.Catalog;
 import org.apache.seatunnel.api.table.catalog.CatalogTable;
 import org.apache.seatunnel.api.table.catalog.PrimaryKey;
@@ -39,6 +39,7 @@ import org.apache.seatunnel.api.table.catalog.TablePath;
 import org.apache.seatunnel.api.table.catalog.TableSchema;
 import org.apache.seatunnel.api.table.catalog.exception.TableNotExistException;
 import org.apache.seatunnel.api.table.schema.SchemaChangeType;
+import org.apache.seatunnel.api.table.schema.event.SchemaChangeEvent;
 import org.apache.seatunnel.api.table.type.SeaTunnelRow;
 import org.apache.seatunnel.connectors.seatunnel.jdbc.catalog.iris.IrisCatalog;
 import org.apache.seatunnel.connectors.seatunnel.jdbc.catalog.iris.savemode.IrisSaveModeHandler;
@@ -57,6 +58,7 @@ import org.apache.seatunnel.connectors.seatunnel.jdbc.utils.JdbcCatalogUtils;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
+import java.sql.Connection;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -70,7 +72,7 @@ public class JdbcSink
         implements SeaTunnelSink<SeaTunnelRow, JdbcSinkState, XidInfo, JdbcAggregatedCommitInfo>,
                 SupportSaveMode,
                 SupportMultiTableSink,
-                SupportSchemaEvolutionSink {
+                SupportSchemaEvolutionRecovery {
 
     private final TableSchema tableSchema;
 
@@ -301,6 +303,41 @@ public class JdbcSink
     @Override
     public Optional<CatalogTable> getWriteCatalogTable() {
         return Optional.ofNullable(catalogTable);
+    }
+
+    @Override
+    public void reconcileSchemaChanges(
+            TableSchema before, TableSchema after, List<SchemaChangeEvent> events)
+            throws IOException {
+        Catalog catalog =
+                getCatalog()
+                        .orElseThrow(
+                                () ->
+                                        new IOException(
+                                                "JDBC schema recovery requires a physical table catalog"));
+        try (Catalog owned = catalog) {
+            owned.open();
+            TablePath path = catalogTable.getTablePath();
+            JdbcSchemaChangeReconciler.reconcile(
+                    before,
+                    after,
+                    events,
+                    () -> owned.getTable(path).getTableSchema(),
+                    event -> {
+                        try (Connection connection =
+                                dialect.getJdbcConnectionProvider(
+                                                jdbcSinkConfig.getJdbcConnectionConfig())
+                                        .getOrEstablishConnection()) {
+                            connection.setAutoCommit(true);
+                            dialect.applySchemaChange(connection, path, event);
+                        }
+                    },
+                    dialect.dialectName());
+        } catch (IOException error) {
+            throw error;
+        } catch (Exception error) {
+            throw new IOException("JDBC schema recovery failed", error);
+        }
     }
 
     @Override

@@ -17,12 +17,20 @@
 
 package org.apache.seatunnel.translation.spark.sink;
 
+import org.apache.seatunnel.api.sink.DefaultSinkWriterContext;
+import org.apache.seatunnel.api.sink.SeaTunnelSink;
+import org.apache.seatunnel.api.sink.SinkAggregatedCommitter;
+import org.apache.seatunnel.api.sink.SinkCommitter;
+import org.apache.seatunnel.api.sink.SinkWriter;
 import org.apache.seatunnel.api.table.catalog.CatalogTable;
 import org.apache.seatunnel.api.table.catalog.CatalogTableUtil;
 import org.apache.seatunnel.api.table.type.BasicType;
 import org.apache.seatunnel.api.table.type.LocalTimeType;
 import org.apache.seatunnel.api.table.type.SeaTunnelDataType;
 import org.apache.seatunnel.api.table.type.SeaTunnelRowType;
+import org.apache.seatunnel.translation.spark.sink.write.SeaTunnelSparkDataWriter;
+import org.apache.seatunnel.translation.spark.sink.write.SeaTunnelSparkDataWriterFactory;
+import org.apache.seatunnel.translation.spark.sink.write.SeaTunnelSparkWriterCommitMessage;
 import org.apache.seatunnel.translation.spark.utils.TypeConverterUtils;
 
 import org.apache.spark.sql.Dataset;
@@ -30,18 +38,25 @@ import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SaveMode;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.catalyst.expressions.GenericRow;
+import org.apache.spark.sql.connector.write.WriterCommitMessage;
 import org.apache.spark.sql.types.ArrayType;
 import org.apache.spark.sql.types.DecimalType;
 import org.apache.spark.sql.types.MapType;
 import org.apache.spark.sql.types.StructType;
 
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentMatchers;
+import org.mockito.Mockito;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.Optional;
 
 import static org.apache.spark.sql.types.DataTypes.BooleanType;
 import static org.apache.spark.sql.types.DataTypes.ByteType;
@@ -56,6 +71,82 @@ import static org.apache.spark.sql.types.DataTypes.StringType;
 import static org.apache.spark.sql.types.DataTypes.TimestampType;
 
 public class SparkSinkTest {
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void streamingWriterUsesDistinctCheckpointIdsForSuccessiveEpochs() throws Exception {
+        SeaTunnelSink sink = Mockito.mock(SeaTunnelSink.class);
+        SinkWriter writer = Mockito.mock(SinkWriter.class);
+        Mockito.when(sink.createWriter(ArgumentMatchers.any())).thenReturn(writer);
+        Mockito.when(sink.createCommitter()).thenReturn(Optional.empty());
+        Mockito.when(writer.prepareCommit(ArgumentMatchers.anyLong())).thenReturn(Optional.empty());
+        CatalogTable table =
+                CatalogTableUtil.getCatalogTable(
+                        "test",
+                        "db",
+                        "schema",
+                        "rows",
+                        new SeaTunnelRowType(
+                                new String[] {"id"}, new SeaTunnelDataType[] {BasicType.INT_TYPE}));
+        SeaTunnelSparkDataWriterFactory factory =
+                new SeaTunnelSparkDataWriterFactory(sink, new CatalogTable[] {table}, "job", 1);
+        factory.createWriter(0, 0, 0).commit();
+        factory.createWriter(0, 1, 1).commit();
+        Mockito.verify(writer).prepareCommit(1);
+        Mockito.verify(writer).prepareCommit(2);
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void workerCommitRetryFailsInsteadOfReportingSparkSuccess() throws Exception {
+        SinkWriter writer = Mockito.mock(SinkWriter.class);
+        SinkCommitter committer = Mockito.mock(SinkCommitter.class);
+        Mockito.when(writer.prepareCommit(1)).thenReturn(Optional.of("pending"));
+        Mockito.when(committer.commit(Collections.singletonList("pending")))
+                .thenReturn(Collections.singletonList("pending"));
+        SeaTunnelSparkDataWriter dataWriter =
+                new SeaTunnelSparkDataWriter(
+                        writer, committer, null, 0, new DefaultSinkWriterContext("job", 0, 1));
+        Assertions.assertThrows(IOException.class, dataWriter::commit);
+        dataWriter.abort();
+        Mockito.verify(committer).abort(Collections.singletonList("pending"));
+        Mockito.verify(writer).close();
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void abortFailureStillClosesWriterAndPreservesCleanupFailure() throws Exception {
+        SinkWriter writer = Mockito.mock(SinkWriter.class);
+        Mockito.doThrow(new IllegalStateException("abort failure")).when(writer).abortPrepare();
+        Mockito.doThrow(new IOException("close failure")).when(writer).close();
+        org.apache.seatunnel.translation.spark.sink.write.SeaTunnelSparkDataWriter dataWriter =
+                new org.apache.seatunnel.translation.spark.sink.write.SeaTunnelSparkDataWriter(
+                        writer, null, null, 0, new DefaultSinkWriterContext("job", 0, 1));
+        IOException error = Assertions.assertThrows(IOException.class, dataWriter::abort);
+        Assertions.assertEquals("abort failure", error.getCause().getMessage());
+        Assertions.assertEquals(1, error.getSuppressed().length);
+        Mockito.verify(writer).close();
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void driverCommitRetryFailsInsteadOfAcknowledgingSourceProgress() throws Exception {
+        SeaTunnelSink sink = Mockito.mock(SeaTunnelSink.class);
+        SinkAggregatedCommitter committer = Mockito.mock(SinkAggregatedCommitter.class);
+        Mockito.when(sink.createAggregatedCommitter()).thenReturn(Optional.of(committer));
+        Mockito.when(committer.combine(Collections.singletonList("pending")))
+                .thenReturn("aggregate");
+        Mockito.when(committer.commit(Collections.singletonList("aggregate")))
+                .thenReturn(Collections.singletonList("aggregate"));
+        SeaTunnelBatchWrite write = new SeaTunnelBatchWrite(sink, new CatalogTable[0], "job", 1);
+        SeaTunnelSparkWriterCommitMessage message =
+                Mockito.mock(SeaTunnelSparkWriterCommitMessage.class);
+        Mockito.when(message.getMessage()).thenReturn("pending");
+        WriterCommitMessage[] messages = {message};
+        Assertions.assertThrows(RuntimeException.class, () -> write.commit(0, messages));
+        write.abort(0, messages);
+        Mockito.verify(committer).abort(Collections.singletonList("aggregate"));
+    }
 
     @Test
     public void testSparkSinkWriteDataWithCopy() {

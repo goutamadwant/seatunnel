@@ -115,6 +115,20 @@ public class SparkRuntimeEnvironment implements RuntimeEnvironment {
         return this;
     }
 
+    public boolean isCheckpointRecoveryEnabled() {
+        if (!config.hasPath(SparkCheckpointOptions.CHECKPOINT_LOCATION.key())) {
+            return false;
+        }
+        if (jobMode != JobMode.STREAMING
+                || config.getString(SparkCheckpointOptions.CHECKPOINT_LOCATION.key())
+                        .trim()
+                        .isEmpty()) {
+            throw new IllegalArgumentException(
+                    "spark.checkpoint.location requires STREAMING mode and a nonempty dedicated directory");
+        }
+        return true;
+    }
+
     public SparkSession getSparkSession() {
         return this.sparkSession;
     }

@@ -66,6 +66,11 @@ public class SeaTunnelSparkDataWriterFactory<CommitInfoT, StateT>
 
     @Override
     public DataWriter<InternalRow> createWriter(int partitionId, long taskId) {
+        return createWriter(partitionId, taskId, 0);
+    }
+
+    @Override
+    public DataWriter<InternalRow> createWriter(int partitionId, long taskId, long epochId) {
         SinkWriter.Context context = new DefaultSinkWriterContext(jobId, (int) taskId, parallelism);
         SinkWriter<SeaTunnelRow, CommitInfoT, StateT> writer;
         SinkCommitter<CommitInfoT> committer;
@@ -80,11 +85,6 @@ public class SeaTunnelSparkDataWriterFactory<CommitInfoT, StateT>
             throw new RuntimeException("Failed to create SinkCommitter.", e);
         }
         return new SeaTunnelSparkDataWriter<>(
-                writer, committer, new MultiTableManager(catalogTables), 0, context);
-    }
-
-    @Override
-    public DataWriter<InternalRow> createWriter(int partitionId, long taskId, long epochId) {
-        return createWriter(partitionId, taskId);
+                writer, committer, new MultiTableManager(catalogTables), epochId, context);
     }
 }

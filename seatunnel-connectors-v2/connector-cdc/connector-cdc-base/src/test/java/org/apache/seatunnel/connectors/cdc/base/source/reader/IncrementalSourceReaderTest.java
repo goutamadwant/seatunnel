@@ -375,6 +375,141 @@ class IncrementalSourceReaderTest {
         assertRestoredRecords(checkpoint, Collections.emptyList());
     }
 
+    @Test
+    void testCheckpointCannotLoseSnapshotSplitDuringCompletionHandoff() throws Exception {
+        CountDownLatch handoff = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch fetcherRelease = new CountDownLatch(1);
+        CountDownLatch checkpointAttempted = new CountDownLatch(1);
+        AtomicReference<Thread> checkpointThread = new AtomicReference<>();
+        AtomicReference<Thread> pollingThread = new AtomicReference<>();
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+        SourceConfig config = Mockito.mock(SourceConfig.class);
+        DataSourceDialect<SourceConfig> dialect = Mockito.mock(DataSourceDialect.class);
+        Mockito.when(dialect.discoverDataCollections(config))
+                .thenReturn(Collections.singletonList(KEPT_TABLE));
+        IncrementalSourceSplitReader<SourceConfig> splitReader =
+                Mockito.mock(IncrementalSourceSplitReader.class);
+        Mockito.when(splitReader.fetch())
+                .thenAnswer(
+                        call -> {
+                            await(fetcherRelease);
+                            return null;
+                        });
+        Mockito.doAnswer(
+                        call -> {
+                            fetcherRelease.countDown();
+                            return null;
+                        })
+                .when(splitReader)
+                .wakeUp();
+        RecordEmitter<SourceRecords, Object, SourceSplitStateBase> emitter =
+                Mockito.mock(RecordEmitter.class);
+        Mockito.doAnswer(
+                        call -> {
+                            SourceSplitStateBase state = call.getArgument(2);
+                            state.asSnapshotSplitState().setLowWatermark(new TestOffset(1));
+                            state.asSnapshotSplitState().setHighWatermark(new TestOffset(2));
+                            return null;
+                        })
+                .when(emitter)
+                .emitRecord(Mockito.any(), Mockito.any(), Mockito.any());
+        ArrayBlockingQueue<RecordsWithSplitIds<SourceRecords>> queue = new ArrayBlockingQueue<>(2);
+        IncrementalSourceReader<Object, SourceConfig> reader =
+                new IncrementalSourceReader<Object, SourceConfig>(
+                        dialect,
+                        queue,
+                        () -> splitReader,
+                        emitter,
+                        new SourceReaderOptions(ReadonlyConfig.fromMap(Collections.emptyMap())),
+                        Mockito.mock(SourceReader.Context.class),
+                        config,
+                        Mockito.mock(DebeziumDeserializationSchema.class)) {
+                    @Override
+                    protected void onSplitFinished(Map<String, SourceSplitStateBase> finished) {
+                        handoff.countDown();
+                        await(release);
+                        super.onSplitFinished(finished);
+                    }
+                };
+        Collector<Object> output =
+                new Collector<Object>() {
+                    public void collect(Object value) {}
+
+                    public Object getCheckpointLock() {
+                        return this;
+                    }
+                };
+        try {
+            SnapshotSplit split =
+                    new SnapshotSplit(
+                            "completing-split",
+                            KEPT_TABLE,
+                            null,
+                            new Object[] {1},
+                            new Object[] {2},
+                            null,
+                            null);
+            reader.addSplits(Collections.singletonList(split));
+            queue.add(
+                    new RecordsBySplits<>(
+                            Collections.singletonMap(
+                                    split.splitId(),
+                                    Collections.singletonList(
+                                            new SourceRecords(Collections.emptyList()))),
+                            Collections.singleton(split.splitId())));
+            Future<?> poll =
+                    workers.submit(
+                            () -> {
+                                pollingThread.set(Thread.currentThread());
+                                reader.pollNext(output);
+                                reader.pollNext(output);
+                                return null;
+                            });
+            await(handoff);
+            Future<List<SourceSplitBase>> checkpoint =
+                    workers.submit(
+                            () -> {
+                                checkpointThread.set(Thread.currentThread());
+                                checkpointAttempted.countDown();
+                                synchronized (output.getCheckpointLock()) {
+                                    return reader.snapshotState(1);
+                                }
+                            });
+            await(checkpointAttempted);
+            ThreadMXBean threads = ManagementFactory.getThreadMXBean();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (true) {
+                ThreadInfo info = threads.getThreadInfo(checkpointThread.get().getId());
+                if (info != null
+                        && info.getThreadState() == Thread.State.BLOCKED
+                        && info.getLockOwnerId() == pollingThread.get().getId()
+                        && info.getLockInfo().getIdentityHashCode()
+                                == System.identityHashCode(output.getCheckpointLock())) break;
+                assertTrue(
+                        System.nanoTime() < deadline,
+                        "Checkpoint did not wait for completion handoff: " + info);
+                assertFalse(checkpoint.isDone(), "Checkpoint lost the completing split");
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+            }
+            release.countDown();
+            poll.get(10, TimeUnit.SECONDS);
+            List<SourceSplitBase> captured = checkpoint.get(10, TimeUnit.SECONDS);
+            assertEquals(Collections.singletonList(split.splitId()), splitIds(captured));
+            byte[] durable = new DefaultSerializer<SourceSplitBase>().serialize(captured.get(0));
+            SnapshotSplit restored =
+                    new DefaultSerializer<SourceSplitBase>().deserialize(durable).asSnapshotSplit();
+            assertTrue(restored.isSnapshotReadFinished());
+            assertEquals("2", restored.getHighWatermark().getOffset().get("pos"));
+        } finally {
+            release.countDown();
+            fetcherRelease.countDown();
+            reader.close();
+            workers.shutdownNow();
+            assertTrue(workers.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
     private static void assertFetcherFailure(CheckpointHarness harness) {
         RuntimeException failure =
                 assertThrows(RuntimeException.class, () -> harness.reader.pollNext(harness.output));

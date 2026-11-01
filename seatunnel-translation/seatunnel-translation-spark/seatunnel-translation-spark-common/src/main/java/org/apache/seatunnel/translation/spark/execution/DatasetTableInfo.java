@@ -18,12 +18,15 @@
 package org.apache.seatunnel.translation.spark.execution;
 
 import org.apache.seatunnel.api.table.catalog.CatalogTable;
+import org.apache.seatunnel.api.transform.SeaTunnelTransform;
 
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 
 import lombok.Data;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 @Data
@@ -32,11 +35,28 @@ public class DatasetTableInfo {
     private Dataset<Row> dataset;
     private List<CatalogTable> catalogTables;
     private String tableName;
+    private int sourceIndex = -1;
+    private List<SeaTunnelTransform> schemaTransforms = Collections.emptyList();
+
+    public void setCatalogTables(List<CatalogTable> catalogTables) {
+        this.catalogTables = Collections.unmodifiableList(new ArrayList<>(catalogTables));
+    }
 
     public DatasetTableInfo(
             Dataset<Row> dataset, List<CatalogTable> catalogTables, String tableName) {
         this.dataset = dataset;
-        this.catalogTables = catalogTables;
+        setCatalogTables(catalogTables);
         this.tableName = tableName;
+    }
+
+    public DatasetTableInfo(
+            Dataset<Row> dataset,
+            List<CatalogTable> catalogTables,
+            String tableName,
+            int sourceIndex,
+            List<SeaTunnelTransform> schemaTransforms) {
+        this(dataset, catalogTables, tableName);
+        this.sourceIndex = sourceIndex;
+        this.schemaTransforms = Collections.unmodifiableList(new ArrayList<>(schemaTransforms));
     }
 }

@@ -101,12 +101,11 @@ public abstract class SparkAbstractPluginExecuteProcessor<T>
                                                         pluginInputIdentifier)));
         return Optional.of(
                 new DatasetTableInfo(
-                        sparkRuntimeEnvironment
-                                .getSparkSession()
-                                .read()
-                                .table(pluginInputIdentifier),
+                        datasetTableInfo.getDataset(),
                         datasetTableInfo.getCatalogTables(),
-                        pluginInputIdentifier));
+                        pluginInputIdentifier,
+                        datasetTableInfo.getSourceIndex(),
+                        datasetTableInfo.getSchemaTransforms()));
     }
 
     // if not support multi table, rollback

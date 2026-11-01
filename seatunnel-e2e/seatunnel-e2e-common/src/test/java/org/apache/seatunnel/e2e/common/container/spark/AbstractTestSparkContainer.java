@@ -86,7 +86,27 @@ public abstract class AbstractTestSparkContainer extends AbstractTestContainer {
 
     @Override
     public void tearDown() throws Exception {
-        stopContainersAndDeleteVolume(master);
+        Exception failure = null;
+        try {
+            if (master != null && master.getContainerId() != null && !master.isRunning()) {
+                master.getDockerClient().startContainerCmd(master.getContainerId()).exec();
+                org.awaitility.Awaitility.await()
+                        .atMost(Duration.ofMinutes(1))
+                        .untilAsserted(
+                                () ->
+                                        org.junit.jupiter.api.Assertions.assertEquals(
+                                                0, master.execInContainer("true").getExitCode()));
+            }
+        } catch (Exception error) {
+            failure = error;
+        }
+        try {
+            stopContainersAndDeleteVolume(master);
+        } catch (Exception error) {
+            if (failure == null) failure = error;
+            else if (failure != error) failure.addSuppressed(error);
+        }
+        if (failure != null) throw failure;
     }
 
     @Override
@@ -125,6 +145,46 @@ public abstract class AbstractTestSparkContainer extends AbstractTestContainer {
             throws IOException, InterruptedException {
         log.info("test in container: {}", identifier());
         return executeJob(master, confFile, null, variables);
+    }
+
+    /** Kills the owned local driver and restarts the same container, retaining checkpoint files. */
+    public void restartSparkRuntimeForRecovery() {
+        String containerId = master.getContainerId();
+        stopSparkRuntimeForRecovery();
+        master.getDockerClient().startContainerCmd(containerId).exec();
+        org.awaitility.Awaitility.await()
+                .atMost(Duration.ofMinutes(1))
+                .untilAsserted(
+                        () ->
+                                org.junit.jupiter.api.Assertions.assertEquals(
+                                        0, master.execInContainer("true").getExitCode()));
+    }
+
+    /** Stops only the owned runtime, preserving files for recovery or failure inspection. */
+    public void stopSparkRuntimeForRecovery() {
+        if (master.isRunning())
+            master.getDockerClient().killContainerCmd(master.getContainerId()).exec();
+    }
+
+    public java.nio.file.Path sparkCheckpointOnHost(String relativePath) {
+        java.nio.file.Path root = Paths.get(HOST_VOLUME_MOUNT_PATH).toAbsolutePath().normalize();
+        java.nio.file.Path path = root.resolve(relativePath).normalize();
+        if (!path.startsWith(root))
+            throw new IllegalArgumentException("Checkpoint must be inside the owned test volume");
+        return path;
+    }
+
+    /** Reads Spark's completed commit markers; pending offset files do not count. */
+    public long latestCompletedSparkEpoch(String checkpointDirectory)
+            throws IOException, InterruptedException {
+        Container.ExecResult result =
+                master.execInContainer("ls", "-1", checkpointDirectory + "/commits");
+        if (result.getExitCode() != 0) return -1;
+        return Arrays.stream(result.getStdout().split("\\R"))
+                .filter(name -> name.matches("[0-9]+"))
+                .mapToLong(Long::parseLong)
+                .max()
+                .orElse(-1);
     }
 
     @Override

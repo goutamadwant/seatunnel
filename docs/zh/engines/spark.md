@@ -114,3 +114,32 @@ sink {
 - [Spark 转换层](../architecture/api-design/spark-translation-layer.md)
 - [Transforms 目录](../transforms)
 - 如果你还想和默认引擎对比，可回看 [SeaTunnel Engine](./zeta/about.md)
+
+
+## 检查点恢复
+
+为 STREAMING 作业配置独立的检查点目录，可以使用 Spark Structured Streaming：
+
+```hocon
+env {
+  job.mode = "STREAMING"
+  checkpoint.interval = 5000
+  spark.checkpoint.location = "hdfs:///seatunnel/jobs/my-job"
+}
+```
+
+使用相同目录重启未修改的作业。该目录必须持久化，并且驱动和所有执行器均可访问。恢复模式只允许一个 Sink 查询，多张表应通过其多表 Sink 路由；检查点保存在 `sink-0` 子目录中。恢复时须保持 Source 顺序、Sink 路由及并行度不变；Source 表结构从已完成的检查点元数据恢复。未配置此选项时，保留现有 Spark 批处理执行方式。
+
+Source 将一个区间的数据与结束状态一起持久化，完成后才允许下游读取。任务重试会重放已完成区间；Spark 在 Sink 提交后通过提交回调通知 Source 检查点完成。该回调返回不代表连接器的异步外部位点提交已经完成。Spark 确认提交后，旧区间会被清理。此机制保留 Sink 原有投递语义，不会让非事务 Sink 获得精确一次保证。
+
+运行中的 Spark 查询具有固定的分析结构。支持结构变更的 CDC Source 必须实现 `SupportSchemaChangeWatermarks`，在 DDL 前冻结旧结构数据，并在变更后的水位标记中持久化恢复结构和 Source 状态。驱动等待 Spark 完成该批次，停止旧查询，协调接收表结构，然后重新构建具有明确类型的 Source、Transform 和 Sink。恢复读取已完成提交的元数据，不采用尚未提交的 offset。Collector 本地结构恢复只刷新转换状态，不向下游重放 DDL。
+
+结构协调需要 Sink 实现 `SupportSchemaEvolutionRecovery`。JDBC 将物理表结构与每一步 DDL 的结构比较，只执行尚未完成的语句；Console 没有需要修改的物理结构。重试不会重复已执行的 DDL。如果接收表结构发生分歧，或者破坏性 DDL 循环使进度无法判断（例如删除后以相同定义重新创建列），则在执行额外 DDL 前失败。仅靠相同的列定义，无法判断会重置数据的 DDL 是否执行成功。恢复模式拒绝重建表、清空 Sink 数据等破坏性保存模式。
+
+对于没有表级结构元数据的旧区间日志，使用配置中的固定结构恢复。路由、不兼容的分析结构或并行度不一致会在输出记录前失败。旧版不完整微批实现生成的检查点不包含持久化区间日志，无法按此格式恢复；新作业应使用新目录。
+
+恢复目录同一时间只能由一个活动的 driver/query 使用。日志读取、检查点确认和清理会保留 Spark 的 Hadoop 配置，包括 HA nameservice 配置。driver/query 重启时会清理旧运行代次留下的未完成临时目录，同时保留当前代次的任务尝试和已完成的批次。
+
+当前恢复模式不保证 driver 崩溃后的端到端 exactly-once。需要恢复 writer state 的 sink（包括 JDBC XA）会在保存模式处理和 query 启动前被拒绝；它们需要单独的持久化 sink 恢复协议。
+
+关闭结构变更传播时，已完成的 DATA 检查点恢复 Source 位点，查询分析保留实时发现的表结构。已经发布但尚未提交的区间保持不变；如果区间中已编码记录的结构与当前发现的结构不一致，恢复将失败，避免按错误布局解码记录。严格空的 DATA 区间可以重放原有位点和状态。存在待处理结构边界时，也不允许关闭传播。

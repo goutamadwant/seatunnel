@@ -45,6 +45,7 @@ public class SparkDataWriter<CommitInfoT, StateT> implements DataWriter<Internal
     @Nullable protected final SinkCommitter<CommitInfoT> sinkCommitter;
     protected CommitInfoT latestCommitInfoT;
     protected long epochId;
+    private boolean closed;
     protected volatile MultiTableResourceManager resourceManager;
 
     private final MultiTableManager multiTableManager;
@@ -58,7 +59,7 @@ public class SparkDataWriter<CommitInfoT, StateT> implements DataWriter<Internal
             org.apache.seatunnel.api.sink.SinkWriter.Context context) {
         this.sinkWriter = sinkWriter;
         this.sinkCommitter = sinkCommitter;
-        this.epochId = epochId == 0 ? 1 : epochId;
+        this.epochId = epochId < 0 ? 1 : Math.addExact(epochId, 1);
         this.multiTableManager = multiTableManager;
         this.context = context;
         initResourceManger();
@@ -92,37 +93,86 @@ public class SparkDataWriter<CommitInfoT, StateT> implements DataWriter<Internal
         sinkWriter.snapshotState(epochId++);
         if (sinkCommitter != null) {
             if (latestCommitInfoT == null) {
-                sinkCommitter.commit(Collections.emptyList());
+                if (!sinkCommitter.commit(Collections.emptyList()).isEmpty()) {
+                    throw new IOException("Sink commit requires retry");
+                }
             } else {
-                sinkCommitter.commit(Collections.singletonList(latestCommitInfoT));
+                if (!sinkCommitter.commit(Collections.singletonList(latestCommitInfoT)).isEmpty()) {
+                    throw new IOException("Sink commit requires retry");
+                }
             }
         }
         SparkWriterCommitMessage<CommitInfoT> sparkWriterCommitMessage =
                 new SparkWriterCommitMessage<>(latestCommitInfoT);
         cleanCommitInfo();
-        sinkWriter.close();
-        context.getEventListener().onEvent(new WriterCloseEvent());
-        try {
-            if (resourceManager != null) {
-                resourceManager.close();
-            }
-        } catch (Throwable e) {
-            log.error("close resourceManager error", e);
-        }
+        closeResources();
         return sparkWriterCommitMessage;
     }
 
     @Override
     public void abort() throws IOException {
-        sinkWriter.abortPrepare();
-        if (sinkCommitter != null) {
-            if (latestCommitInfoT == null) {
-                sinkCommitter.abort(Collections.emptyList());
-            } else {
-                sinkCommitter.abort(Collections.singletonList(latestCommitInfoT));
+        IOException failure = null;
+        try {
+            sinkWriter.abortPrepare();
+        } catch (Exception error) {
+            failure = new IOException("Cannot abort Spark sink preparation", error);
+        }
+        try {
+            if (sinkCommitter != null) {
+                sinkCommitter.abort(
+                        latestCommitInfoT == null
+                                ? Collections.emptyList()
+                                : Collections.singletonList(latestCommitInfoT));
+            }
+        } catch (Exception error) {
+            failure = append(failure, error);
+        } finally {
+            cleanCommitInfo();
+            try {
+                closeResources();
+            } catch (IOException error) {
+                failure = append(failure, error);
             }
         }
-        cleanCommitInfo();
+        if (failure != null) {
+            throw failure;
+        }
+    }
+
+    private synchronized void closeResources() throws IOException {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        IOException failure = null;
+        try {
+            sinkWriter.close();
+        } catch (Exception error) {
+            failure = append(failure, error);
+        }
+        try {
+            context.getEventListener().onEvent(new WriterCloseEvent());
+        } catch (Exception error) {
+            failure = append(failure, error);
+        }
+        try {
+            if (resourceManager != null) {
+                resourceManager.close();
+            }
+        } catch (Exception error) {
+            failure = append(failure, error);
+        }
+        if (failure != null) {
+            throw failure;
+        }
+    }
+
+    private static IOException append(IOException failure, Exception error) {
+        if (failure == null) {
+            return new IOException("Cannot release Spark sink resources", error);
+        }
+        failure.addSuppressed(error);
+        return failure;
     }
 
     private void cleanCommitInfo() {

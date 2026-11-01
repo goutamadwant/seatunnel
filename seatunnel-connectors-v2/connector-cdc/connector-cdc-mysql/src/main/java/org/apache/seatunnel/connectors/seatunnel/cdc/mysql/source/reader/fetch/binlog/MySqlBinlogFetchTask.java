@@ -59,6 +59,7 @@ import static org.apache.seatunnel.connectors.seatunnel.cdc.mysql.source.offset.
 public class MySqlBinlogFetchTask implements FetchTask<SourceSplitBase> {
     private final IncrementalSplit split;
     private volatile boolean taskRunning = false;
+    private volatile boolean stopRequested = false;
 
     public MySqlBinlogFetchTask(IncrementalSplit split) {
         this.split = split;
@@ -66,8 +67,21 @@ public class MySqlBinlogFetchTask implements FetchTask<SourceSplitBase> {
 
     @Override
     public void execute(FetchTask.Context context) throws Exception {
-        MySqlSourceFetchTaskContext sourceFetchContext = (MySqlSourceFetchTaskContext) context;
+        if (stopRequested) {
+            return;
+        }
         taskRunning = true;
+        try {
+            if (!stopRequested) {
+                executeBinlogReader((MySqlSourceFetchTaskContext) context);
+            }
+        } finally {
+            taskRunning = false;
+        }
+    }
+
+    private void executeBinlogReader(MySqlSourceFetchTaskContext sourceFetchContext)
+            throws Exception {
         MySqlStreamingChangeEventSource mySqlStreamingChangeEventSource;
 
         StartupConfig startupConfig = sourceFetchContext.getSourceConfig().getStartupConfig();
@@ -163,16 +177,16 @@ public class MySqlBinlogFetchTask implements FetchTask<SourceSplitBase> {
                 changeEventSourceContext,
                 sourceFetchContext.getPartition(),
                 sourceFetchContext.getOffsetContext());
-        taskRunning = false;
     }
 
     @Override
     public boolean isRunning() {
-        return taskRunning;
+        return taskRunning && !stopRequested;
     }
 
     @Override
     public void shutdown() {
+        stopRequested = true;
         taskRunning = false;
     }
 
@@ -584,7 +598,7 @@ public class MySqlBinlogFetchTask implements FetchTask<SourceSplitBase> {
             implements ChangeEventSource.ChangeEventSourceContext {
         @Override
         public boolean isRunning() {
-            return taskRunning;
+            return taskRunning && !stopRequested;
         }
     }
 }

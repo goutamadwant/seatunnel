@@ -50,6 +50,36 @@ import static org.mockito.Mockito.when;
 class IncrementalSplitAssignerTest {
 
     @Test
+    void shouldAcceptAssignedReaderCompletionBeforeSiblingBucketIsAssigned() {
+        SourceConfig sourceConfig = mock(SourceConfig.class);
+        OffsetFactory offsets = mock(OffsetFactory.class);
+        when(sourceConfig.getStartupConfig())
+                .thenReturn(new StartupConfig(StartupMode.COMMITTED_OFFSET, null, null, null));
+        when(sourceConfig.getStopConfig())
+                .thenReturn(new StopConfig(StopMode.NEVER, null, null, null));
+        when(offsets.committedOffset()).thenReturn(mock(Offset.class));
+        when(offsets.neverStop()).thenReturn(mock(Offset.class));
+        Set<TableId> tables = new LinkedHashSet<>();
+        tables.add(new TableId("db", null, "a"));
+        tables.add(new TableId("db", null, "b"));
+        SplitAssigner.Context<SourceConfig> context =
+                new SplitAssigner.Context<>(sourceConfig, tables, new HashMap<>(), new HashMap<>());
+        IncrementalSplitAssigner<SourceConfig> assigner =
+                new IncrementalSplitAssigner<>(context, 2, offsets);
+        IncrementalSplit first = assigner.getNext().get().asIncrementalSplit();
+        assertFalse(assigner.noMoreSplits());
+        assertTrue(assigner.completedSnapshotPhase(first.getTableIds()));
+        Set<TableId> foreign = new LinkedHashSet<>(tables);
+        foreign.removeAll(first.getTableIds());
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> assigner.completedSnapshotPhase(new java.util.ArrayList<>(foreign)));
+        IncrementalSplit second = assigner.getNext().get().asIncrementalSplit();
+        assertTrue(assigner.noMoreSplits());
+        assertTrue(assigner.completedSnapshotPhase(second.getTableIds()));
+    }
+
+    @Test
     void shouldReuseCheckpointedStartupOffsetAfterRestore() {
         SourceConfig sourceConfig = mock(SourceConfig.class);
         OffsetFactory offsetFactory = mock(OffsetFactory.class);
