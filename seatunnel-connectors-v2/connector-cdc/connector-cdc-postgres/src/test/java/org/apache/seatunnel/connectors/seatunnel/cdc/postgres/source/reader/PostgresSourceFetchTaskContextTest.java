@@ -18,7 +18,15 @@
 package org.apache.seatunnel.connectors.seatunnel.cdc.postgres.source.reader;
 
 import org.apache.seatunnel.common.exception.SeaTunnelRuntimeException;
+import org.apache.seatunnel.connectors.cdc.base.source.reader.external.IncrementalSourceStreamFetcher;
+import org.apache.seatunnel.connectors.cdc.base.source.split.IncrementalSplit;
 import org.apache.seatunnel.connectors.seatunnel.cdc.postgres.exception.PostgresConnectorErrorCode;
+import org.apache.seatunnel.connectors.seatunnel.cdc.postgres.source.PostgresRelationSchemaChangeResolver;
+import org.apache.seatunnel.connectors.seatunnel.cdc.postgres.source.PostgresRelationSchemaRecord;
+import org.apache.seatunnel.connectors.seatunnel.cdc.postgres.source.offset.LsnOffset;
+
+import org.apache.kafka.connect.data.Struct;
+import org.apache.kafka.connect.source.SourceRecord;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -30,13 +38,17 @@ import io.debezium.connector.postgresql.connection.ServerInfo;
 import io.debezium.connector.postgresql.spi.OffsetState;
 import io.debezium.connector.postgresql.spi.SlotState;
 import io.debezium.connector.postgresql.spi.Snapshotter;
+import io.debezium.relational.Table;
 import io.debezium.relational.TableId;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -57,7 +69,81 @@ public class PostgresSourceFetchTaskContextTest {
                             .with(PostgresConnectorConfig.SLOT_NAME, SLOT_NAME)
                             .with(PostgresConnectorConfig.PLUGIN_NAME, PLUGIN_NAME)
                             .with("database.server.name", "postgres_cdc_source")
+                            .with("database.dbname", "testdb")
                             .build());
+
+    @Test
+    public void schemaHistoryOwnershipKeepsSchemaAndQuotedTableNames() throws Exception {
+        PostgresSourceFetchTaskContext context =
+                mock(PostgresSourceFetchTaskContext.class, org.mockito.Mockito.CALLS_REAL_METHODS);
+        when(context.getDbzConnectorConfig()).thenReturn(connectorConfig);
+        Assertions.assertEquals(
+                new TableId("testdb", "public", "a.b"),
+                context.parseSchemaChangeTableId("\"public\".\"a.b\""));
+        Assertions.assertEquals(
+                new TableId("testdb", "other", "a.b"),
+                context.parseSchemaChangeTableId("\"other\".\"a.b\""));
+        Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> context.parseSchemaChangeTableId("\"otherdb\".\"public\".\"a.b\""));
+        SourceRecord relation =
+                PostgresRelationSchemaRecord.create(
+                        Table.editor().tableId(new TableId(null, "public", "a.b")).create(),
+                        Collections.emptyMap(),
+                        Collections.singletonMap("lsn", 123L),
+                        "relation");
+        Struct value = (Struct) relation.value();
+        List<Struct> changes = value.getArray("tableChanges");
+        Assertions.assertEquals(
+                new TableId("testdb", "public", "a.b"),
+                context.parseSchemaChangeTableId(changes.get(0).getString("id")));
+        Assertions.assertTrue(
+                context.shouldEmitSchemaChange(
+                        relation, new LsnOffset(Collections.singletonMap("lsn", "123"))));
+        org.mockito.Mockito.doNothing().when(context).close();
+        try (SchemaOwnershipProbe probe = new SchemaOwnershipProbe(context, relation)) {
+            Assertions.assertTrue(probe.owns(new TableId("testdb", "public", "a.b")));
+            Assertions.assertFalse(probe.owns(new TableId("testdb", "other", "a.b")));
+            Assertions.assertFalse(probe.owns(new TableId("testdb", "public", "sibling")));
+        }
+    }
+
+    private static final class SchemaOwnershipProbe implements AutoCloseable {
+        private final IncrementalSourceStreamFetcher fetcher;
+        private final SourceRecord relation;
+
+        SchemaOwnershipProbe(PostgresSourceFetchTaskContext context, SourceRecord relation)
+                throws Exception {
+            this.relation = relation;
+            fetcher =
+                    new IncrementalSourceStreamFetcher(
+                            context, 0, new PostgresRelationSchemaChangeResolver());
+            Field cut = fetcher.getClass().getDeclaredField("splitStartWatermark");
+            cut.setAccessible(true);
+            cut.set(fetcher, new LsnOffset(Collections.singletonMap("lsn", "123")));
+        }
+
+        boolean owns(TableId table) throws Exception {
+            Field split = fetcher.getClass().getDeclaredField("currentIncrementalSplit");
+            split.setAccessible(true);
+            split.set(
+                    fetcher,
+                    new IncrementalSplit(
+                            "relation",
+                            Collections.singletonList(table),
+                            null,
+                            null,
+                            Collections.emptyList()));
+            Method emit = fetcher.getClass().getDeclaredMethod("shouldEmit", SourceRecord.class);
+            emit.setAccessible(true);
+            return (boolean) emit.invoke(fetcher, relation);
+        }
+
+        @Override
+        public void close() {
+            fetcher.close();
+        }
+    }
 
     @Test
     public void testSnapshotterIsInitializedBeforeItIsAsked() throws SQLException {

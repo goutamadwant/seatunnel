@@ -102,7 +102,9 @@ public class SeaTunnelBatchWrite<StateT, CommitInfoT, AggregatedCommitInfoT>
     public void commit(WriterCommitMessage[] messages) {
         if (aggregatedCommitter != null) {
             try {
-                aggregatedCommitter.commit(combineCommitMessage(messages));
+                if (!aggregatedCommitter.commit(combineCommitMessage(messages)).isEmpty()) {
+                    throw new IOException("Sink aggregate commit requires retry");
+                }
             } catch (IOException e) {
                 throw new RuntimeException("SinkAggregatedCommitter commit failed in driver", e);
             }

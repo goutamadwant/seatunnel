@@ -333,6 +333,243 @@ public class IncrementalSourceStreamFetcherTest {
                 SourceRecordUtils.isHeartbeatRecord(records.get(10).getSourceRecordList().get(1)));
     }
 
+    @Test
+    public void schemaChangesAreEmittedOnlyByTheirSplitOwner() throws Exception {
+        SchemaChangeResolver resolver = mock(SchemaChangeResolver.class);
+        when(resolver.support(any())).thenReturn(true);
+        FetchTask.Context context =
+                mock(FetchTask.Context.class, org.mockito.Mockito.CALLS_REAL_METHODS);
+        IncrementalSourceStreamFetcher fetcher =
+                new IncrementalSourceStreamFetcher(context, 0, resolver);
+        try {
+            setField(
+                    fetcher,
+                    "currentIncrementalSplit",
+                    new IncrementalSplit(
+                            "a",
+                            Collections.singletonList(new TableId("db", null, "a")),
+                            null,
+                            null,
+                            Collections.emptyList()));
+            Assertions.assertTrue(fetcher.shouldEmit(ownedSchemaChange("a", "db.a")));
+            Assertions.assertFalse(fetcher.shouldEmit(ownedSchemaChange("b", "db.b")));
+            List<SourceRecords> blocks = new ArrayList<>();
+            fetcher.splitSchemaChangeStream(
+                            Arrays.asList(
+                                    new DataChangeEvent(ownedSchemaChange("b", "db.b")),
+                                    new DataChangeEvent(ownedSchemaChange("a", "db.a"))))
+                    .forEachRemaining(blocks::add);
+            Assertions.assertEquals(2, blocks.size());
+            Assertions.assertEquals(2, blocks.get(1).getSourceRecordList().size());
+        } finally {
+            fetcher.close();
+        }
+    }
+
+    @Test
+    public void mixedOrInconsistentSchemaOwnershipFailsBeforeCreatingBoundaries() throws Exception {
+        SchemaChangeResolver resolver = mock(SchemaChangeResolver.class);
+        when(resolver.support(any())).thenReturn(true);
+        IncrementalSourceStreamFetcher fetcher =
+                new IncrementalSourceStreamFetcher(
+                        mock(FetchTask.Context.class, org.mockito.Mockito.CALLS_REAL_METHODS),
+                        0,
+                        resolver);
+        try {
+            setField(
+                    fetcher,
+                    "currentIncrementalSplit",
+                    new IncrementalSplit(
+                            "a",
+                            Collections.singletonList(new TableId("db", null, "a")),
+                            null,
+                            null,
+                            Collections.emptyList()));
+            Assertions.assertThrows(
+                    org.apache.seatunnel.common.utils.SeaTunnelException.class,
+                    () ->
+                            fetcher.splitSchemaChangeStream(
+                                    Collections.singletonList(
+                                            new DataChangeEvent(
+                                                    ownedSchemaChange("a", "db.a", "db.b")))));
+            Assertions.assertThrows(
+                    org.apache.seatunnel.common.utils.SeaTunnelException.class,
+                    () -> fetcher.shouldEmit(ownedSchemaChange("a", "db.b")));
+        } finally {
+            fetcher.close();
+        }
+    }
+
+    @Test
+    public void schemaResumeFilterRunsBeforeCreatingAnyBoundary() throws Exception {
+        SchemaChangeResolver resolver = mock(SchemaChangeResolver.class);
+        when(resolver.support(any())).thenReturn(true);
+        FetchTask.Context context =
+                mock(FetchTask.Context.class, org.mockito.Mockito.CALLS_REAL_METHODS);
+        Offset cut = mock(Offset.class);
+        SourceRecord record = ownedSchemaChange("a", "db.a");
+        when(context.shouldEmitSchemaChange(record, cut)).thenReturn(false);
+        IncrementalSourceStreamFetcher fetcher =
+                new IncrementalSourceStreamFetcher(context, 0, resolver);
+        try {
+            setField(fetcher, "splitStartWatermark", cut);
+            setField(
+                    fetcher,
+                    "currentIncrementalSplit",
+                    new IncrementalSplit(
+                            "a",
+                            Collections.singletonList(new TableId("db", null, "a")),
+                            cut,
+                            null,
+                            Collections.emptyList()));
+            List<SourceRecords> blocks = new ArrayList<>();
+            fetcher.splitSchemaChangeStream(Collections.singletonList(new DataChangeEvent(record)))
+                    .forEachRemaining(blocks::add);
+            Assertions.assertTrue(blocks.isEmpty());
+            when(context.shouldEmitSchemaChange(record, cut)).thenReturn(true);
+            fetcher.splitSchemaChangeStream(Collections.singletonList(new DataChangeEvent(record)))
+                    .forEachRemaining(blocks::add);
+            Assertions.assertEquals(2, blocks.size());
+        } finally {
+            fetcher.close();
+        }
+    }
+
+    @Test
+    public void relationSchemaOwnershipDoesNotRequireAnEnvelopeSource() throws Exception {
+        SourceRecord envelope = ownedSchemaChange("a", "\"public\".\"a\"");
+        Struct original = (Struct) envelope.value();
+        Schema schema =
+                SchemaBuilder.struct()
+                        .field("tableChanges", original.schema().field("tableChanges").schema())
+                        .build();
+        Struct value = new Struct(schema).put("tableChanges", original.getArray("tableChanges"));
+        SourceRecord relation =
+                new SourceRecord(
+                        Collections.emptyMap(),
+                        Collections.emptyMap(),
+                        "schema",
+                        SchemaBuilder.struct()
+                                .name("io.debezium.connector.postgresql.SchemaChangeKey")
+                                .build(),
+                        null,
+                        schema,
+                        value);
+        SchemaChangeResolver resolver = mock(SchemaChangeResolver.class);
+        when(resolver.support(any())).thenReturn(true);
+        FetchTask.Context context =
+                mock(FetchTask.Context.class, org.mockito.Mockito.CALLS_REAL_METHODS);
+        org.mockito.Mockito.doAnswer(
+                        invocation -> {
+                            TableId parsed = TableId.parse(invocation.getArgument(0), false);
+                            return new TableId("testdb", parsed.schema(), parsed.table());
+                        })
+                .when(context)
+                .parseSchemaChangeTableId(any());
+        Offset cut = mock(Offset.class);
+        IncrementalSourceStreamFetcher fetcher =
+                new IncrementalSourceStreamFetcher(context, 0, resolver);
+        try {
+            setField(fetcher, "splitStartWatermark", cut);
+            setField(
+                    fetcher,
+                    "currentIncrementalSplit",
+                    new IncrementalSplit(
+                            "a",
+                            Collections.singletonList(new TableId("testdb", "public", "a")),
+                            cut,
+                            null,
+                            Collections.emptyList()));
+            Assertions.assertTrue(fetcher.shouldEmit(relation));
+            setField(
+                    fetcher,
+                    "currentIncrementalSplit",
+                    new IncrementalSplit(
+                            "b",
+                            Collections.singletonList(new TableId("testdb", "public", "b")),
+                            cut,
+                            null,
+                            Collections.emptyList()));
+            Assertions.assertFalse(fetcher.shouldEmit(relation));
+        } finally {
+            fetcher.close();
+        }
+    }
+
+    @Test
+    public void nonExactlyOnceDataStillRespectsSplitOwnership() throws Exception {
+        FetchTask.Context context =
+                mock(FetchTask.Context.class, org.mockito.Mockito.CALLS_REAL_METHODS);
+        when(context.isDataChangeRecord(any())).thenReturn(true);
+        when(context.isExactlyOnce()).thenReturn(false);
+        Offset start = mock(Offset.class);
+        Offset offset = mock(Offset.class);
+        when(context.getStreamOffset(any())).thenReturn(offset);
+        when(offset.isAtOrAfter(start)).thenReturn(true);
+        IncrementalSourceStreamFetcher fetcher =
+                new IncrementalSourceStreamFetcher(context, 0, null);
+        try {
+            setField(fetcher, "splitStartWatermark", start);
+            setField(
+                    fetcher,
+                    "currentIncrementalSplit",
+                    new IncrementalSplit(
+                            "foreign",
+                            Collections.singletonList(new TableId("testdb", "public", "other")),
+                            start,
+                            null,
+                            Collections.emptyList()));
+            Assertions.assertFalse(fetcher.shouldEmit(createDataEventWithSource()));
+            setField(
+                    fetcher,
+                    "currentIncrementalSplit",
+                    new IncrementalSplit(
+                            "owner",
+                            Collections.singletonList(
+                                    new TableId("testdb", "public", "test_table")),
+                            start,
+                            null,
+                            Collections.emptyList()));
+            Assertions.assertTrue(fetcher.shouldEmit(createDataEventWithSource()));
+        } finally {
+            fetcher.close();
+        }
+    }
+
+    private static SourceRecord ownedSchemaChange(String table, String... ids) {
+        Schema sourceSchema =
+                SchemaBuilder.struct()
+                        .field("db", Schema.STRING_SCHEMA)
+                        .field("table", Schema.STRING_SCHEMA)
+                        .field(DEBEZIUM_CONNECTOR_KEY, Schema.STRING_SCHEMA)
+                        .build();
+        Schema changeSchema = SchemaBuilder.struct().field("id", Schema.STRING_SCHEMA).build();
+        List<Struct> changes = new ArrayList<>();
+        for (String id : ids) changes.add(new Struct(changeSchema).put("id", id));
+        Schema valueSchema =
+                SchemaBuilder.struct()
+                        .field("source", sourceSchema)
+                        .field("tableChanges", SchemaBuilder.array(changeSchema).build())
+                        .build();
+        Struct value =
+                new Struct(valueSchema)
+                        .put(
+                                "source",
+                                new Struct(sourceSchema)
+                                        .put("db", "db")
+                                        .put("table", table)
+                                        .put(DEBEZIUM_CONNECTOR_KEY, "mysql"))
+                        .put("tableChanges", changes);
+        return new SourceRecord(
+                Collections.emptyMap(),
+                Collections.emptyMap(),
+                "schema",
+                SchemaBuilder.struct().name("io.debezium.connector.mysql.SchemaChangeKey").build(),
+                null,
+                valueSchema,
+                value);
+    }
+
     static SourceRecord createSchemaChangeEvent() {
         return createSchemaChangeEvent("SCHEMA_CHANGE_TOPIC");
     }
@@ -562,7 +799,8 @@ public class IncrementalSourceStreamFetcherTest {
     public void testShouldEmitAtOrAfterWatermark() throws Exception {
         IncrementalSourceStreamFetcher fetcher = createPlainFetcher();
 
-        FetchTask.Context taskContext = mock(FetchTask.Context.class);
+        FetchTask.Context taskContext =
+                mock(FetchTask.Context.class, org.mockito.Mockito.CALLS_REAL_METHODS);
         when(taskContext.isDataChangeRecord(any())).thenReturn(true);
         when(taskContext.isExactlyOnce()).thenReturn(false);
 
@@ -582,7 +820,8 @@ public class IncrementalSourceStreamFetcherTest {
     public void testShouldEmitBeforeWatermarkFiltered() throws Exception {
         IncrementalSourceStreamFetcher fetcher = createPlainFetcher();
 
-        FetchTask.Context taskContext = mock(FetchTask.Context.class);
+        FetchTask.Context taskContext =
+                mock(FetchTask.Context.class, org.mockito.Mockito.CALLS_REAL_METHODS);
         when(taskContext.isDataChangeRecord(any())).thenReturn(true);
         when(taskContext.isExactlyOnce()).thenReturn(false);
 

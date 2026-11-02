@@ -88,7 +88,9 @@ public class SparkDataSourceWriter<StateT, CommitInfoT, AggregatedCommitInfoT>
     public void commit(WriterCommitMessage[] messages) {
         if (sinkAggregatedCommitter != null) {
             try {
-                sinkAggregatedCommitter.commit(combineCommitMessage(messages));
+                if (!sinkAggregatedCommitter.commit(combineCommitMessage(messages)).isEmpty()) {
+                    throw new IOException("Sink aggregate commit requires retry");
+                }
             } catch (IOException e) {
                 throw new RuntimeException("SinkAggregatedCommitter commit failed in driver", e);
             }

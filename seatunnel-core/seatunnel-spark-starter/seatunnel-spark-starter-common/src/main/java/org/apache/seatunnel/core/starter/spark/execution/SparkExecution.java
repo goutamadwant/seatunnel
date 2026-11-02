@@ -20,6 +20,7 @@ package org.apache.seatunnel.core.starter.spark.execution;
 import org.apache.seatunnel.shade.com.typesafe.config.Config;
 
 import org.apache.seatunnel.api.common.JobContext;
+import org.apache.seatunnel.api.table.catalog.CatalogTable;
 import org.apache.seatunnel.common.Constants;
 import org.apache.seatunnel.common.config.TypesafeConfigUtils;
 import org.apache.seatunnel.core.starter.exception.TaskExecuteException;
@@ -34,6 +35,7 @@ import java.sql.DriverManager;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 public class SparkExecution implements TaskExecution {
@@ -82,6 +84,40 @@ public class SparkExecution implements TaskExecution {
 
     @Override
     public void execute() throws TaskExecuteException {
+        if (sparkRuntimeEnvironment.isCheckpointRecoveryEnabled()) {
+            SourceExecuteProcessor sources = (SourceExecuteProcessor) sourcePluginExecuteProcessor;
+            ((SinkExecuteProcessor) sinkPluginExecuteProcessor)
+                    .executeRecoverable(
+                            new SparkQueryPlanFactory() {
+                                public List<DatasetTableInfo> build(
+                                        Map<
+                                                        Integer,
+                                                        java.util.List<
+                                                                org.apache.seatunnel.api.table
+                                                                        .catalog.CatalogTable>>
+                                                recovered) {
+                                    return transformPluginExecuteProcessor.execute(
+                                            sources.executeWithCatalogs(recovered));
+                                }
+
+                                public List<DatasetTableInfo> build(
+                                        Map<Integer, java.util.List<CatalogTable>> recovered,
+                                        Map<Integer, Long> appliedBoundaries) {
+                                    return transformPluginExecuteProcessor.execute(
+                                            sources.executeWithCatalogs(
+                                                    recovered, appliedBoundaries));
+                                }
+
+                                public boolean restoreCheckpointSchema(int index) {
+                                    return sources.restoreCheckpointSchema(index);
+                                }
+
+                                public java.util.List<CatalogTable> sourceCatalogs(int index) {
+                                    return sources.sourceCatalogs(index);
+                                }
+                            });
+            return;
+        }
         List<DatasetTableInfo> datasets = new ArrayList<>();
         datasets = sourcePluginExecuteProcessor.execute(datasets);
         datasets = transformPluginExecuteProcessor.execute(datasets);

@@ -25,7 +25,7 @@ import org.apache.seatunnel.api.source.Boundedness;
 import org.apache.seatunnel.api.source.SeaTunnelSource;
 import org.apache.seatunnel.api.source.SourceReader;
 import org.apache.seatunnel.api.source.SourceSplitEnumerator;
-import org.apache.seatunnel.api.source.SupportCoordinate;
+import org.apache.seatunnel.api.source.SupportSchemaChangeWatermarks;
 import org.apache.seatunnel.api.table.catalog.CatalogTable;
 import org.apache.seatunnel.api.table.catalog.CatalogTableUtil;
 import org.apache.seatunnel.api.table.catalog.Column;
@@ -33,6 +33,7 @@ import org.apache.seatunnel.api.table.catalog.MetadataColumn;
 import org.apache.seatunnel.api.table.catalog.MetadataSchema;
 import org.apache.seatunnel.api.table.type.BasicType;
 import org.apache.seatunnel.api.table.type.CommonOptions;
+import org.apache.seatunnel.connectors.cdc.base.config.JdbcSourceConfig;
 import org.apache.seatunnel.connectors.cdc.base.config.SourceConfig;
 import org.apache.seatunnel.connectors.cdc.base.config.StartupConfig;
 import org.apache.seatunnel.connectors.cdc.base.config.StopConfig;
@@ -91,13 +92,14 @@ import java.util.stream.Stream;
  *
  * <p>Its readers and enumerator exchange {@link org.apache.seatunnel.api.source.SourceEvent}s
  * (finished snapshot split reports, their acknowledgements and the end of the snapshot phase), so
- * it is marked with {@link SupportCoordinate} to run one enumerator for all readers on engines that
- * would otherwise give every reader its own enumerator.
+ * it is marked with {@link SupportSchemaChangeWatermarks} to run one enumerator for all readers on
+ * engines that would otherwise give every reader its own enumerator.
  */
 @NoArgsConstructor
 @Slf4j
 public abstract class IncrementalSource<T, C extends SourceConfig>
-        implements SeaTunnelSource<T, SourceSplitBase, PendingSplitsState>, SupportCoordinate {
+        implements SeaTunnelSource<T, SourceSplitBase, PendingSplitsState>,
+                SupportSchemaChangeWatermarks {
 
     static {
         // Load DriverManager first to avoid deadlock between DriverManager's
@@ -268,6 +270,15 @@ public abstract class IncrementalSource<T, C extends SourceConfig>
     }
 
     @SuppressWarnings("MagicNumber")
+    @Override
+    public boolean restoreCheckpointSchema() {
+        C sourceConfig = configFactory.create(0);
+        return sourceConfig instanceof JdbcSourceConfig
+                && ((JdbcSourceConfig) sourceConfig)
+                        .getDbzConnectorConfig()
+                        .isSchemaChangesHistoryEnabled();
+    }
+
     @Override
     public SourceReader<T, SourceSplitBase> createReader(SourceReader.Context readerContext)
             throws Exception {

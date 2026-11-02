@@ -17,13 +17,14 @@
 
 package org.apache.seatunnel.translation.spark.source.state;
 
-import org.apache.seatunnel.common.utils.SerializationUtils;
+import org.apache.seatunnel.translation.spark.source.SparkCheckpointOffset;
 
 import org.apache.spark.sql.sources.v2.reader.streaming.Offset;
 
 import java.io.Serializable;
 
 public class MicroBatchState extends Offset implements Serializable {
+    private static final long serialVersionUID = 8466820598967747792L;
 
     private final Integer checkpointId;
 
@@ -33,7 +34,7 @@ public class MicroBatchState extends Offset implements Serializable {
 
     @Override
     public String json() {
-        return SerializationUtils.objectToString(this);
+        return SparkCheckpointOffset.json(checkpointId);
     }
 
     public Integer getCheckpointId() {

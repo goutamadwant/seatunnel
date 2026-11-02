@@ -20,8 +20,9 @@ package org.apache.seatunnel.translation.spark.source.reader.micro;
 import org.apache.seatunnel.api.source.SeaTunnelSource;
 import org.apache.seatunnel.api.source.SupportCoordinate;
 import org.apache.seatunnel.api.table.type.SeaTunnelRow;
-import org.apache.seatunnel.common.utils.SerializationUtils;
 import org.apache.seatunnel.translation.spark.execution.MultiTableManager;
+import org.apache.seatunnel.translation.spark.source.SparkMicroBatchReader;
+import org.apache.seatunnel.translation.spark.source.SparkSourceCheckpoint;
 import org.apache.seatunnel.translation.spark.source.partition.micro.MicroBatchPartition;
 import org.apache.seatunnel.translation.spark.source.state.MicroBatchState;
 
@@ -51,6 +52,7 @@ public class MicroBatchSourceReader implements MicroBatchReader {
     protected MicroBatchState endOffset;
     private Map<String, String> envOptions;
     private final MultiTableManager multiTableManager;
+    private final String driverOwner = java.util.UUID.randomUUID().toString();
 
     public MicroBatchSourceReader(
             SeaTunnelSource<SeaTunnelRow, ?, ?> source,
@@ -77,11 +79,45 @@ public class MicroBatchSourceReader implements MicroBatchReader {
 
     @Override
     public void setOffsetRange(Optional<Offset> start, Optional<Offset> end) {
-        startOffset = (MicroBatchState) start.orElse(new MicroBatchState(checkpointId));
-        this.checkpointId = startOffset.getCheckpointId();
+        startOffset = (MicroBatchState) start.orElse(new MicroBatchState(0));
+        this.checkpointId = Math.addExact(startOffset.getCheckpointId(), 1);
+        boolean pause = false;
+        if (!end.isPresent()
+                && source
+                        instanceof org.apache.seatunnel.api.source.SupportSchemaChangeWatermarks) {
+            try {
+                org.apache.hadoop.conf.Configuration configuration =
+                        new org.apache.hadoop.conf.Configuration(
+                                org.apache.spark.sql.SparkSession.getActiveSession()
+                                        .get()
+                                        .sparkContext()
+                                        .hadoopConfiguration());
+                configuration.set("fs.defaultFS", hdfsRoot);
+                pause =
+                        SparkSourceCheckpoint.shouldPause(
+                                configuration,
+                                checkpointPath,
+                                startOffset.getCheckpointId(),
+                                hdfsUser,
+                                multiTableManager,
+                                Long.parseLong(
+                                        envOptions.getOrDefault(
+                                                org.apache.seatunnel.translation.spark.source
+                                                        .SparkSourceCatalog.APPLIED_BOUNDARY,
+                                                "-1")));
+            } catch (Exception error) {
+                throw SparkMicroBatchReader.checkpointFailure(error);
+            }
+        }
         endOffset =
                 (MicroBatchState)
-                        end.orElse(new MicroBatchState(startOffset.getCheckpointId() + 1));
+                        end.orElse(
+                                new MicroBatchState(
+                                        pause ? startOffset.getCheckpointId() : checkpointId));
+        if (startOffset.getCheckpointId() < 0
+                || (endOffset.getCheckpointId().intValue() != checkpointId.intValue() && !pause)) {
+            throw new IllegalArgumentException("Expected one positive Spark checkpoint interval");
+        }
     }
 
     @Override
@@ -96,12 +132,33 @@ public class MicroBatchSourceReader implements MicroBatchReader {
 
     @Override
     public Offset deserializeOffset(String microBatchState) {
-        return SerializationUtils.stringToObject(microBatchState);
+        try {
+            return new MicroBatchState(
+                    Math.toIntExact(
+                            org.apache.seatunnel.translation.spark.source.SparkCheckpointOffset
+                                    .checkpointId(microBatchState)));
+        } catch (java.io.IOException | ArithmeticException error) {
+            throw SparkMicroBatchReader.checkpointFailure(error);
+        }
     }
 
     @Override
     public void commit(Offset end) {
-        // nothing
+        try {
+            SparkMicroBatchReader.acknowledge(
+                    org.apache.spark.sql.SparkSession.getActiveSession().get().sparkContext(),
+                    source,
+                    parallelism,
+                    jobId,
+                    ((MicroBatchState) end).getCheckpointId(),
+                    checkpointPath,
+                    hdfsRoot,
+                    hdfsUser,
+                    envOptions,
+                    multiTableManager);
+        } catch (Exception e) {
+            throw SparkMicroBatchReader.checkpointFailure(e);
+        }
     }
 
     @Override
@@ -131,7 +188,12 @@ public class MicroBatchSourceReader implements MicroBatchReader {
                             hdfsRoot,
                             hdfsUser,
                             envOptions,
-                            multiTableManager));
+                            multiTableManager,
+                            org.apache.spark.sql.SparkSession.getActiveSession()
+                                    .get()
+                                    .sparkContext()
+                                    .hadoopConfiguration(),
+                            driverOwner));
         } else {
             virtualPartitions = new ArrayList<>(parallelism);
             for (int subtaskId = 0; subtaskId < parallelism; subtaskId++) {
@@ -147,10 +209,14 @@ public class MicroBatchSourceReader implements MicroBatchReader {
                                 hdfsRoot,
                                 hdfsUser,
                                 envOptions,
-                                multiTableManager));
+                                multiTableManager,
+                                org.apache.spark.sql.SparkSession.getActiveSession()
+                                        .get()
+                                        .sparkContext()
+                                        .hadoopConfiguration(),
+                                driverOwner));
             }
         }
-        checkpointId++;
         return virtualPartitions;
     }
 }

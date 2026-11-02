@@ -18,18 +18,15 @@
 package org.apache.seatunnel.translation.spark.source.partition.micro;
 
 import org.apache.seatunnel.api.source.SeaTunnelSource;
-import org.apache.seatunnel.api.source.SupportCoordinate;
 import org.apache.seatunnel.api.table.type.SeaTunnelRow;
 import org.apache.seatunnel.translation.spark.execution.MultiTableManager;
-import org.apache.seatunnel.translation.spark.source.partition.batch.ParallelBatchPartitionReader;
+import org.apache.seatunnel.translation.spark.source.SparkMicroBatchReader;
 
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.connector.read.InputPartition;
 import org.apache.spark.sql.connector.read.PartitionReader;
 import org.apache.spark.sql.connector.read.PartitionReaderFactory;
 import org.apache.spark.sql.util.CaseInsensitiveStringMap;
-
-import java.util.Map;
 
 public class SeaTunnelMicroBatchPartitionReaderFactory implements PartitionReaderFactory {
 
@@ -40,9 +37,11 @@ public class SeaTunnelMicroBatchPartitionReaderFactory implements PartitionReade
 
     private final String checkpointLocation;
 
-    private final CaseInsensitiveStringMap caseInsensitiveStringMap;
+    private final java.util.Map<String, String> envOptions;
 
     private final MultiTableManager multiTableManager;
+    private final org.apache.spark.util.SerializableConfiguration hadoopConfiguration;
+    private final String driverOwner;
 
     public SeaTunnelMicroBatchPartitionReaderFactory(
             SeaTunnelSource<SeaTunnelRow, ?, ?> source,
@@ -51,11 +50,53 @@ public class SeaTunnelMicroBatchPartitionReaderFactory implements PartitionReade
             String checkpointLocation,
             CaseInsensitiveStringMap caseInsensitiveStringMap,
             MultiTableManager multiTableManager) {
+        this(
+                source,
+                parallelism,
+                jobId,
+                checkpointLocation,
+                caseInsensitiveStringMap,
+                multiTableManager,
+                new org.apache.hadoop.conf.Configuration());
+    }
+
+    public SeaTunnelMicroBatchPartitionReaderFactory(
+            SeaTunnelSource<SeaTunnelRow, ?, ?> source,
+            int parallelism,
+            String jobId,
+            String checkpointLocation,
+            CaseInsensitiveStringMap caseInsensitiveStringMap,
+            MultiTableManager multiTableManager,
+            org.apache.hadoop.conf.Configuration configuration) {
+        this(
+                source,
+                parallelism,
+                jobId,
+                checkpointLocation,
+                caseInsensitiveStringMap,
+                multiTableManager,
+                configuration,
+                jobId);
+    }
+
+    public SeaTunnelMicroBatchPartitionReaderFactory(
+            SeaTunnelSource<SeaTunnelRow, ?, ?> source,
+            int parallelism,
+            String jobId,
+            String checkpointLocation,
+            CaseInsensitiveStringMap caseInsensitiveStringMap,
+            MultiTableManager multiTableManager,
+            org.apache.hadoop.conf.Configuration configuration,
+            String driverOwner) {
+        this.hadoopConfiguration =
+                new org.apache.spark.util.SerializableConfiguration(
+                        new org.apache.hadoop.conf.Configuration(configuration));
+        this.driverOwner = driverOwner;
         this.source = source;
         this.parallelism = parallelism;
         this.jobId = jobId;
         this.checkpointLocation = checkpointLocation;
-        this.caseInsensitiveStringMap = caseInsensitiveStringMap;
+        this.envOptions = new java.util.HashMap<>(caseInsensitiveStringMap.asCaseSensitiveMap());
         this.multiTableManager = multiTableManager;
     }
 
@@ -63,42 +104,40 @@ public class SeaTunnelMicroBatchPartitionReaderFactory implements PartitionReade
     public PartitionReader<InternalRow> createReader(InputPartition partition) {
         SeaTunnelMicroBatchInputPartition seaTunnelPartition =
                 (SeaTunnelMicroBatchInputPartition) partition;
-        ParallelBatchPartitionReader partitionReader;
-        Integer subtaskId = seaTunnelPartition.getSubtaskId();
-        Integer checkpointId = seaTunnelPartition.getCheckpointId();
-        Integer checkpointInterval = seaTunnelPartition.getCheckpointInterval();
-        String hdfsRoot = seaTunnelPartition.getHdfsRoot();
-        String hdfsUser = seaTunnelPartition.getHdfsUser();
-        Map<String, String> envOptions = caseInsensitiveStringMap.asCaseSensitiveMap();
-        if (source instanceof SupportCoordinate) {
-            partitionReader =
-                    new CoordinatedMicroBatchPartitionReader(
-                            source,
-                            parallelism,
-                            jobId,
-                            subtaskId,
-                            checkpointId,
-                            checkpointInterval,
-                            checkpointLocation,
-                            hdfsRoot,
-                            hdfsUser,
-                            envOptions,
-                            multiTableManager);
-        } else {
-            partitionReader =
-                    new ParallelMicroBatchPartitionReader(
-                            source,
-                            parallelism,
-                            jobId,
-                            subtaskId,
-                            checkpointId,
-                            checkpointInterval,
-                            checkpointLocation,
-                            hdfsRoot,
-                            hdfsUser,
-                            envOptions,
-                            multiTableManager);
-        }
-        return new SeaTunnelMicroBatchPartitionReader(partitionReader);
+        SparkMicroBatchReader reader =
+                new SparkMicroBatchReader(
+                        source,
+                        parallelism,
+                        jobId,
+                        seaTunnelPartition.getSubtaskId(),
+                        seaTunnelPartition.getCheckpointId(),
+                        seaTunnelPartition.getCheckpointInterval(),
+                        seaTunnelPartition.getCheckpointPath(),
+                        seaTunnelPartition.getHdfsRoot(),
+                        seaTunnelPartition.getHdfsUser(),
+                        envOptions,
+                        multiTableManager,
+                        hadoopConfiguration.value(),
+                        driverOwner);
+        return new PartitionReader<InternalRow>() {
+            @Override
+            public boolean next() throws java.io.IOException {
+                try {
+                    return reader.next();
+                } catch (Exception e) {
+                    throw new java.io.IOException(e);
+                }
+            }
+
+            @Override
+            public InternalRow get() {
+                return reader.get();
+            }
+
+            @Override
+            public void close() throws java.io.IOException {
+                reader.close();
+            }
+        };
     }
 }

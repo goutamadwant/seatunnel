@@ -486,6 +486,18 @@ public class PostgresSourceFetchTaskContext extends JdbcSourceFetchTaskContext {
         return PostgresUtils.getLsnPosition(sourceRecord);
     }
 
+    /** Resolve pgoutput's schema.table history against this connection's captured database. */
+    @Override
+    public TableId parseSchemaChangeTableId(String identifier) {
+        TableId parsed = TableId.parse(identifier, false);
+        String database = getDbzConnectorConfig().databaseName();
+        if (parsed.catalog() != null && !Objects.equals(database, parsed.catalog())) {
+            throw new IllegalArgumentException(
+                    "PostgreSQL schema change belongs to a different database");
+        }
+        return new TableId(database, parsed.schema(), parsed.table());
+    }
+
     @Override
     public void close() {
         try {

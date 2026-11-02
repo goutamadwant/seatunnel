@@ -5,6 +5,10 @@ You need to check this document before you upgrade to related version.
 
 ## dev
 
+### Spark micro-batch checkpoint storage
+
+The micro-batch source now requires a durable journal containing both interval rows and source state. Checkpoints produced by the former implementation do not contain that journal and cannot be migrated automatically. Keep existing checkpoint directories for recovery with the matching old binaries. Start the new recovery mode in a new dedicated directory, with a source start position and sink replay policy chosen to avoid gaps or duplicate effects. Preserve the source/sink ordering, table schemas, and parallelism when reusing the new directory. This change does not add live schema evolution or durable XA sink recovery.
+
 ### Zeta: runtime metric counters restart from zero after a pipeline failover restore
 
 - **Behavior change: runtime counters no longer accumulate values from a failed pipeline attempt**

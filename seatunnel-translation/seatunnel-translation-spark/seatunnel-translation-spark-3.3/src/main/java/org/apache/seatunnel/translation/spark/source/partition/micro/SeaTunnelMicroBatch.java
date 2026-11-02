@@ -24,6 +24,8 @@ import org.apache.seatunnel.api.table.type.SeaTunnelRow;
 import org.apache.seatunnel.common.Constants;
 import org.apache.seatunnel.common.utils.JsonUtils;
 import org.apache.seatunnel.translation.spark.execution.MultiTableManager;
+import org.apache.seatunnel.translation.spark.source.SparkMicroBatchReader;
+import org.apache.seatunnel.translation.spark.source.SparkSourceCheckpoint;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -32,6 +34,8 @@ import org.apache.spark.sql.connector.read.InputPartition;
 import org.apache.spark.sql.connector.read.PartitionReaderFactory;
 import org.apache.spark.sql.connector.read.streaming.MicroBatchStream;
 import org.apache.spark.sql.connector.read.streaming.Offset;
+import org.apache.spark.sql.connector.read.streaming.ReadLimit;
+import org.apache.spark.sql.connector.read.streaming.SupportsAdmissionControl;
 import org.apache.spark.sql.util.CaseInsensitiveStringMap;
 
 import lombok.Getter;
@@ -40,7 +44,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 @Getter
-public class SeaTunnelMicroBatch implements MicroBatchStream {
+public class SeaTunnelMicroBatch implements MicroBatchStream, SupportsAdmissionControl {
 
     public static final Integer CHECKPOINT_INTERVAL_DEFAULT = 10000;
 
@@ -48,6 +52,7 @@ public class SeaTunnelMicroBatch implements MicroBatchStream {
 
     private final int parallelism;
     private final String jobId;
+    private final String driverOwner = java.util.UUID.randomUUID().toString();
 
     private final String checkpointLocation;
 
@@ -76,11 +81,58 @@ public class SeaTunnelMicroBatch implements MicroBatchStream {
 
     @Override
     public Offset latestOffset() {
-        return currentOffset;
+        return nextOffset((SeaTunnelOffset) currentOffset);
+    }
+
+    @Override
+    public Offset latestOffset(Offset start, ReadLimit limit) {
+        SeaTunnelOffset beginning = (SeaTunnelOffset) (start == null ? initialOffset : start);
+        currentOffset = beginning;
+        return nextOffset(beginning);
+    }
+
+    private Offset nextOffset(SeaTunnelOffset beginning) {
+        if (source instanceof org.apache.seatunnel.api.source.SupportSchemaChangeWatermarks) {
+            try {
+                Configuration configuration =
+                        new Configuration(
+                                SparkSession.getActiveSession()
+                                        .get()
+                                        .sparkContext()
+                                        .hadoopConfiguration());
+                if (caseInsensitiveStringMap.containsKey(Constants.HDFS_ROOT)) {
+                    configuration.set(
+                            "fs.defaultFS", caseInsensitiveStringMap.get(Constants.HDFS_ROOT));
+                }
+                if (SparkSourceCheckpoint.shouldPause(
+                        configuration,
+                        checkpointLocation,
+                        beginning.getCheckpointId(),
+                        caseInsensitiveStringMap.getOrDefault(Constants.HDFS_USER, ""),
+                        multiTableManager,
+                        Long.parseLong(
+                                caseInsensitiveStringMap.getOrDefault(
+                                        org.apache.seatunnel.translation.spark.source
+                                                .SparkSourceCatalog.APPLIED_BOUNDARY,
+                                        "-1")))) {
+                    return beginning;
+                }
+            } catch (Exception error) {
+                throw SparkMicroBatchReader.checkpointFailure(error);
+            }
+        }
+        return beginning.inc();
     }
 
     @Override
     public InputPartition[] planInputPartitions(Offset start, Offset end) {
+        long startId = ((SeaTunnelOffset) start).getCheckpointId();
+        long endId = ((SeaTunnelOffset) end).getCheckpointId();
+        if (startId < 0 || endId != startId + 1 || endId > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("Expected one positive Spark checkpoint interval");
+        }
+        this.currentOffset = end;
+        int checkpointId = Math.toIntExact(endId);
         int checkpointInterval =
                 caseInsensitiveStringMap.getInt(
                         EnvCommonOptions.CHECKPOINT_INTERVAL.key(), CHECKPOINT_INTERVAL_DEFAULT);
@@ -98,7 +150,7 @@ public class SeaTunnelMicroBatch implements MicroBatchStream {
                             source,
                             parallelism,
                             0,
-                            1,
+                            checkpointId,
                             checkpointInterval,
                             checkpointLocation,
                             hdfsRoot,
@@ -111,7 +163,7 @@ public class SeaTunnelMicroBatch implements MicroBatchStream {
                                 source,
                                 parallelism,
                                 subtaskId,
-                                1,
+                                checkpointId,
                                 checkpointInterval,
                                 checkpointLocation,
                                 hdfsRoot,
@@ -129,7 +181,9 @@ public class SeaTunnelMicroBatch implements MicroBatchStream {
                 jobId,
                 checkpointLocation,
                 caseInsensitiveStringMap,
-                multiTableManager);
+                multiTableManager,
+                SparkSession.getActiveSession().get().sparkContext().hadoopConfiguration(),
+                driverOwner);
     }
 
     @Override
@@ -139,12 +193,37 @@ public class SeaTunnelMicroBatch implements MicroBatchStream {
 
     @Override
     public Offset deserializeOffset(String json) {
-        return JsonUtils.parseObject(json, SeaTunnelOffset.class);
+        SeaTunnelOffset restored = JsonUtils.parseObject(json, SeaTunnelOffset.class);
+        if (restored.getCheckpointId() > ((SeaTunnelOffset) currentOffset).getCheckpointId()) {
+            currentOffset = restored;
+        }
+        return restored;
     }
 
     @Override
     public void commit(Offset end) {
-        this.currentOffset = ((SeaTunnelOffset) end).inc();
+        try {
+            Configuration conf =
+                    SparkSession.getActiveSession().get().sparkContext().hadoopConfiguration();
+            SparkMicroBatchReader.acknowledge(
+                    SparkSession.getActiveSession().get().sparkContext(),
+                    source,
+                    parallelism,
+                    jobId,
+                    ((SeaTunnelOffset) end).getCheckpointId(),
+                    checkpointLocation,
+                    caseInsensitiveStringMap.getOrDefault(
+                            Constants.HDFS_ROOT, FileSystem.getDefaultUri(conf).toString()),
+                    caseInsensitiveStringMap.getOrDefault(Constants.HDFS_USER, ""),
+                    new java.util.HashMap<>(caseInsensitiveStringMap.asCaseSensitiveMap()),
+                    multiTableManager);
+        } catch (Exception e) {
+            throw SparkMicroBatchReader.checkpointFailure(e);
+        }
+        if (((SeaTunnelOffset) end).getCheckpointId()
+                > ((SeaTunnelOffset) currentOffset).getCheckpointId()) {
+            this.currentOffset = end;
+        }
     }
 
     @Override

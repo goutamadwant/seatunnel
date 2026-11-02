@@ -357,7 +357,13 @@ public class IncrementalSplitAssigner<C extends SourceConfig> implements SplitAs
     }
 
     public boolean completedSnapshotPhase(List<TableId> tableIds) {
-        checkArgument(splitAssigned && noMoreSplits());
+        Set<TableId> assignedTables =
+                assignedSplits.values().stream()
+                        .flatMap(split -> split.getTableIds().stream())
+                        .collect(Collectors.toSet());
+        // Assignment invokes the reader synchronously. One restored reader can already enter
+        // pure incremental mode while sibling buckets still await assignment in the same pass.
+        checkArgument(splitAssigned && assignedTables.containsAll(tableIds));
 
         for (String splitKey : new ArrayList<>(context.getAssignedSnapshotSplit().keySet())) {
             SnapshotSplit assignedSplit = context.getAssignedSnapshotSplit().get(splitKey);

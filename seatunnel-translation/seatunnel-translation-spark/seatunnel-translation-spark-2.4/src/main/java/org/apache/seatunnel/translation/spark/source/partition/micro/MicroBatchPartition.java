@@ -18,13 +18,9 @@
 package org.apache.seatunnel.translation.spark.source.partition.micro;
 
 import org.apache.seatunnel.api.source.SeaTunnelSource;
-import org.apache.seatunnel.api.source.SupportCoordinate;
 import org.apache.seatunnel.api.table.type.SeaTunnelRow;
 import org.apache.seatunnel.translation.spark.execution.MultiTableManager;
-import org.apache.seatunnel.translation.spark.source.reader.SeaTunnelInputPartitionReader;
-import org.apache.seatunnel.translation.spark.source.reader.batch.ParallelBatchPartitionReader;
-import org.apache.seatunnel.translation.spark.source.reader.micro.CoordinatedMicroBatchPartitionReader;
-import org.apache.seatunnel.translation.spark.source.reader.micro.ParallelMicroBatchPartitionReader;
+import org.apache.seatunnel.translation.spark.source.SparkMicroBatchReader;
 
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.sources.v2.reader.InputPartition;
@@ -45,6 +41,8 @@ public class MicroBatchPartition implements InputPartition<InternalRow> {
     private Map<String, String> envOptions;
 
     protected final MultiTableManager multiTableManager;
+    private final org.apache.spark.util.SerializableConfiguration hadoopConfiguration;
+    private final String driverOwner;
 
     public MicroBatchPartition(
             SeaTunnelSource<SeaTunnelRow, ?, ?> source,
@@ -58,6 +56,68 @@ public class MicroBatchPartition implements InputPartition<InternalRow> {
             String hdfsUser,
             Map<String, String> envOptions,
             MultiTableManager multiTableManager) {
+        this(
+                source,
+                parallelism,
+                jobId,
+                subtaskId,
+                checkpointId,
+                checkpointInterval,
+                checkpointPath,
+                hdfsRoot,
+                hdfsUser,
+                envOptions,
+                multiTableManager,
+                new org.apache.hadoop.conf.Configuration());
+    }
+
+    public MicroBatchPartition(
+            SeaTunnelSource<SeaTunnelRow, ?, ?> source,
+            Integer parallelism,
+            String jobId,
+            Integer subtaskId,
+            Integer checkpointId,
+            Integer checkpointInterval,
+            String checkpointPath,
+            String hdfsRoot,
+            String hdfsUser,
+            Map<String, String> envOptions,
+            MultiTableManager multiTableManager,
+            org.apache.hadoop.conf.Configuration configuration) {
+        this(
+                source,
+                parallelism,
+                jobId,
+                subtaskId,
+                checkpointId,
+                checkpointInterval,
+                checkpointPath,
+                hdfsRoot,
+                hdfsUser,
+                envOptions,
+                multiTableManager,
+                configuration,
+                jobId);
+    }
+
+    public MicroBatchPartition(
+            SeaTunnelSource<SeaTunnelRow, ?, ?> source,
+            Integer parallelism,
+            String jobId,
+            Integer subtaskId,
+            Integer checkpointId,
+            Integer checkpointInterval,
+            String checkpointPath,
+            String hdfsRoot,
+            String hdfsUser,
+            Map<String, String> envOptions,
+            MultiTableManager multiTableManager,
+            org.apache.hadoop.conf.Configuration configuration,
+            String driverOwner) {
+        this.hadoopConfiguration =
+                new org.apache.spark.util.SerializableConfiguration(
+                        new org.apache.hadoop.conf.Configuration(configuration));
+        this.driverOwner = driverOwner;
         this.source = source;
         this.parallelism = parallelism;
         this.jobId = jobId;
@@ -73,36 +133,40 @@ public class MicroBatchPartition implements InputPartition<InternalRow> {
 
     @Override
     public InputPartitionReader<InternalRow> createPartitionReader() {
-        ParallelBatchPartitionReader partitionReader;
-        if (source instanceof SupportCoordinate) {
-            partitionReader =
-                    new CoordinatedMicroBatchPartitionReader(
-                            source,
-                            parallelism,
-                            jobId,
-                            subtaskId,
-                            checkpointId,
-                            checkpointInterval,
-                            checkpointPath,
-                            hdfsRoot,
-                            hdfsUser,
-                            envOptions,
-                            multiTableManager);
-        } else {
-            partitionReader =
-                    new ParallelMicroBatchPartitionReader(
-                            source,
-                            parallelism,
-                            jobId,
-                            subtaskId,
-                            checkpointId,
-                            checkpointInterval,
-                            checkpointPath,
-                            hdfsRoot,
-                            hdfsUser,
-                            envOptions,
-                            multiTableManager);
-        }
-        return new SeaTunnelInputPartitionReader(partitionReader);
+        SparkMicroBatchReader reader =
+                new SparkMicroBatchReader(
+                        source,
+                        parallelism,
+                        jobId,
+                        subtaskId,
+                        checkpointId,
+                        checkpointInterval,
+                        checkpointPath,
+                        hdfsRoot,
+                        hdfsUser,
+                        envOptions,
+                        multiTableManager,
+                        hadoopConfiguration.value(),
+                        driverOwner);
+        return new InputPartitionReader<InternalRow>() {
+            @Override
+            public boolean next() throws java.io.IOException {
+                try {
+                    return reader.next();
+                } catch (Exception e) {
+                    throw new java.io.IOException(e);
+                }
+            }
+
+            @Override
+            public InternalRow get() {
+                return reader.get();
+            }
+
+            @Override
+            public void close() throws java.io.IOException {
+                reader.close();
+            }
+        };
     }
 }

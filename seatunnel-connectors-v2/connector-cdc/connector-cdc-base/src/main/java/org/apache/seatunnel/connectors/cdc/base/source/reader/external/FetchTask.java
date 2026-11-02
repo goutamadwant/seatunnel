@@ -61,6 +61,19 @@ public interface FetchTask<Split> {
 
         Offset getStreamOffset(SourceRecord record);
 
+        /**
+         * Filters replayed schema records before creating checkpoint boundaries. Connectors whose
+         * schema messages share the preceding row's offset must retain them by default.
+         */
+        default boolean shouldEmitSchemaChange(SourceRecord record, Offset startupOffset) {
+            return true;
+        }
+
+        /** Parses a history identifier using the connector's catalog/schema convention. */
+        default TableId parseSchemaChangeTableId(String identifier) {
+            return TableId.parse(identifier);
+        }
+
         boolean isDataChangeRecord(SourceRecord record);
 
         boolean isRecordBetween(SourceRecord record, Object[] splitStart, Object[] splitEnd);

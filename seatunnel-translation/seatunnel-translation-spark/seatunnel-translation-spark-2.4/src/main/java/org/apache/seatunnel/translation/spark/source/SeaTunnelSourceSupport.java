@@ -17,11 +17,8 @@
 
 package org.apache.seatunnel.translation.spark.source;
 
-import org.apache.seatunnel.shade.org.apache.commons.lang3.StringUtils;
-
 import org.apache.seatunnel.api.options.EnvCommonOptions;
 import org.apache.seatunnel.api.source.SeaTunnelSource;
-import org.apache.seatunnel.api.source.SupportCoordinate;
 import org.apache.seatunnel.api.table.catalog.CatalogTable;
 import org.apache.seatunnel.api.table.catalog.CatalogTableUtil;
 import org.apache.seatunnel.api.table.type.SeaTunnelDataType;
@@ -94,23 +91,13 @@ public class SeaTunnelSourceSupport
             String checkpointLocation,
             DataSourceOptions options) {
         SeaTunnelSource<SeaTunnelRow, ?, ?> seaTunnelSource = getSeaTunnelSource(options);
-        if (seaTunnelSource instanceof SupportCoordinate) {
-            throw new UnsupportedOperationException(
-                    String.format(
-                            "Source [%s] coordinates its readers through source events (SupportCoordinate), "
-                                    + "which Spark micro-batch reading does not support yet because it "
-                                    + "cannot restore the source state between micro-batches. Read it with "
-                                    + "Spark batch reading, which the SeaTunnel Spark starter uses for both "
-                                    + "BATCH and STREAMING jobs, or run the job on Zeta or Flink.",
-                            seaTunnelSource.getPluginName()));
-        }
+
         Integer parallelism = options.getInt(EnvCommonOptions.PARALLELISM.key(), 1);
         String applicationId = SparkSession.getActiveSession().get().sparkContext().applicationId();
         Integer checkpointInterval =
                 options.getInt(
                         EnvCommonOptions.CHECKPOINT_INTERVAL.key(), CHECKPOINT_INTERVAL_DEFAULT);
-        String checkpointPath =
-                StringUtils.replacePattern(checkpointLocation, "sources/\\d+", "sources-state");
+        String checkpointPath = checkpointLocation;
         Configuration configuration =
                 SparkSession.getActiveSession().get().sparkContext().hadoopConfiguration();
         String hdfsRoot =
@@ -119,15 +106,7 @@ public class SeaTunnelSourceSupport
         String hdfsUser = options.get(Constants.HDFS_USER).orElse("");
         Integer checkpointId = options.getInt(Constants.CHECKPOINT_ID, 1);
         Map<String, String> envOptions = options.asMap();
-        List<CatalogTable> catalogTables;
-        try {
-            catalogTables = seaTunnelSource.getProducedCatalogTables();
-        } catch (UnsupportedOperationException e) {
-            // TODO remove it when all connector use `getProducedCatalogTables`
-            SeaTunnelDataType<?> seaTunnelDataType = seaTunnelSource.getProducedType();
-            catalogTables =
-                    CatalogTableUtil.convertDataTypeToCatalogTables(seaTunnelDataType, "default");
-        }
+        List<CatalogTable> catalogTables = SparkSourceCatalog.resolve(seaTunnelSource, envOptions);
         MultiTableManager multiTableManager =
                 new MultiTableManager(catalogTables.toArray(new CatalogTable[0]));
         return new MicroBatchSourceReader(

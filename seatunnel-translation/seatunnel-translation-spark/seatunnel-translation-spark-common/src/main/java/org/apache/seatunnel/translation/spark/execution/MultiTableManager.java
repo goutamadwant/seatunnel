@@ -48,6 +48,7 @@ import java.util.stream.IntStream;
 @Slf4j
 public class MultiTableManager implements Serializable {
 
+    private final List<CatalogTable> catalogTables;
     private Map<String, InternalRowConverter> rowSerializationMap;
     private Map<String, SeaTunnelRowConverter> genericRowSerializationMap;
 
@@ -58,6 +59,9 @@ public class MultiTableManager implements Serializable {
     private boolean isMultiTable = false;
 
     public MultiTableManager(CatalogTable[] catalogTables) {
+        this.catalogTables =
+                java.util.Collections.unmodifiableList(
+                        new ArrayList<>(Arrays.asList(catalogTables)));
         List<ColumnWithIndex> columnWithIndexes = mergeSchema(catalogTables);
         if (catalogTables.length > 1) {
             isMultiTable = true;
@@ -124,6 +128,10 @@ public class MultiTableManager implements Serializable {
             return genericRowSerializationMap.get(tableId).convert(record);
         }
         return genericRowSerialization.convert(record);
+    }
+
+    public List<CatalogTable> getCatalogTables() {
+        return catalogTables;
     }
 
     public StructType getTableSchema() {

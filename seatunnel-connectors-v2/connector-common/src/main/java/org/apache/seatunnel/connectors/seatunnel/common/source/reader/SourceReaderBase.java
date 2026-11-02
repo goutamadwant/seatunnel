@@ -197,22 +197,27 @@ public abstract class SourceReaderBase<E, T, SplitT extends SourceSplit, SplitSt
     }
 
     private void finishCurrentFetch(final RecordsWithSplitIds<E> fetch, final Collector<T> output) {
-        currentFetch = null;
-        currentSplitContext = null;
-        currentSplitOutput = null;
+        // A checkpoint must see the split either in active state or in the connector's
+        // finished/unacknowledged state. Removing it before the completion hook left a gap
+        // in which a restore could wait forever for a completion no reader still owned.
+        synchronized (output.getCheckpointLock()) {
+            currentFetch = null;
+            currentSplitContext = null;
+            currentSplitOutput = null;
 
-        Set<String> finishedSplits = fetch.finishedSplits();
-        if (!finishedSplits.isEmpty()) {
-            log.info("Finished reading split(s) {}", finishedSplits);
-            Map<String, SplitStateT> stateOfFinishedSplits = new HashMap<>();
-            for (String finishedSplitId : finishedSplits) {
-                stateOfFinishedSplits.put(
-                        finishedSplitId, splitStates.remove(finishedSplitId).state);
+            Set<String> finishedSplits = fetch.finishedSplits();
+            if (!finishedSplits.isEmpty()) {
+                log.info("Finished reading split(s) {}", finishedSplits);
+                Map<String, SplitStateT> stateOfFinishedSplits = new HashMap<>();
+                for (String finishedSplitId : finishedSplits) {
+                    stateOfFinishedSplits.put(
+                            finishedSplitId, splitStates.remove(finishedSplitId).state);
+                }
+                onSplitFinished(stateOfFinishedSplits);
             }
-            onSplitFinished(stateOfFinishedSplits);
-        }
 
-        fetch.recycle();
+            fetch.recycle();
+        }
     }
 
     public int getNumberOfCurrentlyAssignedSplits() {

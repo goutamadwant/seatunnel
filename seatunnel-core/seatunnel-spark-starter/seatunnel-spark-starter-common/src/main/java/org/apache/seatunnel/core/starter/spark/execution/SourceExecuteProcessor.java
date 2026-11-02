@@ -36,6 +36,7 @@ import org.apache.seatunnel.common.utils.SerializationUtils;
 import org.apache.seatunnel.core.starter.execution.SourceTableInfo;
 import org.apache.seatunnel.plugin.discovery.seatunnel.SeaTunnelSourcePluginDiscovery;
 import org.apache.seatunnel.translation.spark.execution.DatasetTableInfo;
+import org.apache.seatunnel.translation.spark.source.SparkSourceCatalog;
 
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
@@ -45,6 +46,7 @@ import scala.Tuple2;
 import java.io.Serializable;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -67,7 +69,7 @@ public class SourceExecuteProcessor extends SparkAbstractPluginExecuteProcessor<
         super(sparkEnvironment, jobContext, sourceConfigs);
         for (Map.Entry<String, ConfigValue> entry : sparkEnvironment.getConfig().entrySet()) {
             String envKey = entry.getKey();
-            String envValue = entry.getValue().render();
+            String envValue = String.valueOf(entry.getValue().unwrapped());
             if (envKey != null && envValue != null) {
                 envOption.put(envKey, envValue);
             }
@@ -76,6 +78,17 @@ public class SourceExecuteProcessor extends SparkAbstractPluginExecuteProcessor<
 
     @Override
     public List<DatasetTableInfo> execute(List<DatasetTableInfo> upstreamDataStreams) {
+        return executeWithCatalogs(Collections.emptyMap());
+    }
+
+    public List<DatasetTableInfo> executeWithCatalogs(
+            Map<Integer, List<CatalogTable>> recoveredCatalogs) {
+        return executeWithCatalogs(recoveredCatalogs, Collections.emptyMap());
+    }
+
+    public List<DatasetTableInfo> executeWithCatalogs(
+            Map<Integer, List<CatalogTable>> recoveredCatalogs,
+            Map<Integer, Long> appliedBoundaries) {
         List<DatasetTableInfo> sources = new ArrayList<>();
         for (int i = 0; i < plugins.size(); i++) {
             SourceTableInfo sourceTableInfo = plugins.get(i);
@@ -92,25 +105,61 @@ public class SourceExecuteProcessor extends SparkAbstractPluginExecuteProcessor<
                                         EnvCommonOptions.PARALLELISM.key(),
                                         EnvCommonOptions.PARALLELISM.defaultValue());
             }
-            envOption.put(EnvCommonOptions.PARALLELISM.key(), String.valueOf(parallelism));
-            Dataset<Row> dataset =
-                    sparkRuntimeEnvironment
-                            .getSparkSession()
-                            .read()
-                            .format(SeaTunnelSource.class.getSimpleName())
-                            .option(
-                                    Constants.SOURCE_SERIALIZATION,
-                                    SerializationUtils.objectToString(source))
-                            .options(envOption)
-                            .load();
+            Map<String, String> sourceOptions = new HashMap<>(envOption);
+            sourceOptions.put(EnvCommonOptions.PARALLELISM.key(), String.valueOf(parallelism));
+            sourceOptions.put(SparkSourceCatalog.SOURCE_INDEX, Integer.toString(i));
+            sourceOptions.put(
+                    SparkSourceCatalog.APPLIED_BOUNDARY,
+                    Long.toString(appliedBoundaries.getOrDefault(i, -1L)));
+            List<CatalogTable> catalogs =
+                    recoveredCatalogs.getOrDefault(i, sourceTableInfo.getCatalogTables());
+            if (recoveredCatalogs.containsKey(i)) {
+                sourceOptions.put(
+                        SparkSourceCatalog.CATALOGS,
+                        SerializationUtils.objectToString(new ArrayList<>(catalogs)));
+            }
+            Dataset<Row> dataset;
+            if (sparkRuntimeEnvironment.isCheckpointRecoveryEnabled()) {
+                dataset =
+                        sparkRuntimeEnvironment
+                                .getSparkSession()
+                                .readStream()
+                                .format(SeaTunnelSource.class.getSimpleName())
+                                .option(
+                                        Constants.SOURCE_SERIALIZATION,
+                                        SerializationUtils.objectToString(source))
+                                .options(sourceOptions)
+                                .load();
+            } else {
+                dataset =
+                        sparkRuntimeEnvironment
+                                .getSparkSession()
+                                .read()
+                                .format(SeaTunnelSource.class.getSimpleName())
+                                .option(
+                                        Constants.SOURCE_SERIALIZATION,
+                                        SerializationUtils.objectToString(source))
+                                .options(sourceOptions)
+                                .load();
+            }
             sources.add(
                     new DatasetTableInfo(
                             dataset,
-                            sourceTableInfo.getCatalogTables(),
-                            ReadonlyConfig.fromConfig(pluginConfig).get(PLUGIN_OUTPUT)));
+                            catalogs,
+                            ReadonlyConfig.fromConfig(pluginConfig).get(PLUGIN_OUTPUT),
+                            i,
+                            Collections.emptyList()));
             registerInputTempView(pluginConfigs.get(i), dataset);
         }
         return sources;
+    }
+
+    boolean restoreCheckpointSchema(int index) {
+        return SparkSourceCatalog.restoreCheckpointSchema(plugins.get(index).getSource());
+    }
+
+    List<CatalogTable> sourceCatalogs(int index) {
+        return new ArrayList<>(plugins.get(index).getCatalogTables());
     }
 
     @Override

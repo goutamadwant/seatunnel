@@ -29,11 +29,13 @@ import org.apache.seatunnel.connectors.cdc.base.source.split.SourceSplitBase;
 import org.apache.seatunnel.connectors.cdc.base.source.split.wartermark.WatermarkEvent;
 import org.apache.seatunnel.connectors.cdc.base.utils.SourceRecordUtils;
 
+import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceRecord;
 
 import io.debezium.connector.base.ChangeEventQueue;
 import io.debezium.pipeline.DataChangeEvent;
 import io.debezium.relational.TableId;
+import io.debezium.relational.history.HistoryRecord;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
@@ -266,6 +268,10 @@ public class IncrementalSourceStreamFetcher implements Fetcher<SourceRecords, So
         if (taskContext.isDataChangeRecord(sourceRecord)) {
             Offset position = taskContext.getStreamOffset(sourceRecord);
             TableId tableId = getTableId(sourceRecord);
+            if (currentIncrementalSplit != null
+                    && !currentIncrementalSplit.getTableIds().contains(tableId)) {
+                return false;
+            }
             if (!taskContext.isExactlyOnce()) {
                 log.trace(
                         "The table {} is not support exactly-once, so ignore the watermark check",
@@ -295,7 +301,43 @@ public class IncrementalSourceStreamFetcher implements Fetcher<SourceRecords, So
             }
             return false;
         }
+        if (schemaChangeResolver != null
+                && SourceRecordUtils.isSchemaChangeEvent(sourceRecord)
+                && schemaChangeResolver.support(sourceRecord)) {
+            return ownsSchemaChange(sourceRecord)
+                    && (splitStartWatermark == null
+                            || taskContext.shouldEmitSchemaChange(
+                                    sourceRecord, splitStartWatermark));
+        }
         return true;
+    }
+
+    private boolean ownsSchemaChange(SourceRecord record) {
+        // A normal Debezium binlog task can see every captured table, while this split owns
+        // only a subset. Filter before shared deserialization mutates catalog and history state.
+        Struct value = (Struct) record.value();
+        if (value.schema().field(HistoryRecord.Fields.TABLE_CHANGES) == null) {
+            throw new SeaTunnelException("Supported schema change has no table ownership metadata");
+        }
+        List<Struct> changes = value.getArray(HistoryRecord.Fields.TABLE_CHANGES);
+        Set<TableId> changedTables = new HashSet<>();
+        if (changes != null) {
+            for (Struct change : changes) {
+                changedTables.add(taskContext.parseSchemaChangeTableId(change.getString("id")));
+            }
+        }
+        if (changedTables.size() != 1) {
+            // The resolver aggregates one ALTER under source.table. Accepting a mixed-table
+            // record here would either duplicate DDL or apply another owner's columns.
+            throw new SeaTunnelException("Supported schema change must identify exactly one table");
+        }
+        TableId changedTable = changedTables.iterator().next();
+        // PostgreSQL RELATION records carry tableChanges without an Envelope.source struct.
+        // When both identifiers are present, they must agree before decoding shared state.
+        if (value.schema().field("source") != null && !changedTable.equals(getTableId(record))) {
+            throw new SeaTunnelException("Schema change table ownership metadata is inconsistent");
+        }
+        return currentIncrementalSplit.getTableIds().contains(changedTable);
     }
 
     private boolean hasEnterPureBinlogPhase(TableId tableId, Offset position) {

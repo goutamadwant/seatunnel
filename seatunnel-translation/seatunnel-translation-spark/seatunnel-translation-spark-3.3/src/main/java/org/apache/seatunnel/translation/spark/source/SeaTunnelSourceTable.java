@@ -23,8 +23,6 @@ import org.apache.seatunnel.shade.org.apache.commons.lang3.StringUtils;
 import org.apache.seatunnel.api.options.EnvCommonOptions;
 import org.apache.seatunnel.api.source.SeaTunnelSource;
 import org.apache.seatunnel.api.table.catalog.CatalogTable;
-import org.apache.seatunnel.api.table.catalog.CatalogTableUtil;
-import org.apache.seatunnel.api.table.type.SeaTunnelDataType;
 import org.apache.seatunnel.api.table.type.SeaTunnelRow;
 import org.apache.seatunnel.common.Constants;
 import org.apache.seatunnel.common.utils.SerializationUtils;
@@ -61,15 +59,7 @@ public class SeaTunnelSourceTable implements Table, SupportsRead {
             throw new IllegalArgumentException("source.serialization must be specified");
         }
         this.source = SerializationUtils.stringToObject(sourceSerialization);
-        List<CatalogTable> catalogTables;
-        try {
-            catalogTables = source.getProducedCatalogTables();
-        } catch (UnsupportedOperationException e) {
-            // TODO remove it when all connector use `getProducedCatalogTables`
-            SeaTunnelDataType<?> seaTunnelDataType = source.getProducedType();
-            catalogTables =
-                    CatalogTableUtil.convertDataTypeToCatalogTables(seaTunnelDataType, "default");
-        }
+        List<CatalogTable> catalogTables = SparkSourceCatalog.resolve(source, properties);
         multiTableManager = new MultiTableManager(catalogTables.toArray(new CatalogTable[0]));
     }
 

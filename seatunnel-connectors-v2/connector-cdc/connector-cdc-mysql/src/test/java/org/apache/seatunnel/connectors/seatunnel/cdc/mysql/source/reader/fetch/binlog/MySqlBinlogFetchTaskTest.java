@@ -26,6 +26,28 @@ import org.junit.jupiter.api.Test;
 public class MySqlBinlogFetchTaskTest {
 
     @Test
+    public void shutdownBeforeExecutionDoesNotStartABinlogReader() {
+        org.apache.seatunnel.connectors.seatunnel.cdc.mysql.source.reader.fetch
+                        .MySqlSourceFetchTaskContext
+                context =
+                        org.mockito.Mockito.mock(
+                                org.apache.seatunnel.connectors.seatunnel.cdc.mysql.source.reader
+                                        .fetch.MySqlSourceFetchTaskContext.class);
+        MySqlBinlogFetchTask task =
+                new MySqlBinlogFetchTask(
+                        new org.apache.seatunnel.connectors.cdc.base.source.split.IncrementalSplit(
+                                "cancelled",
+                                java.util.Collections.emptyList(),
+                                null,
+                                null,
+                                java.util.Collections.emptyList()));
+        task.shutdown();
+        Assertions.assertDoesNotThrow(() -> task.execute(context));
+        Assertions.assertFalse(task.isRunning());
+        org.mockito.Mockito.verifyNoInteractions(context);
+    }
+
+    @Test
     public void testTimestampFilterIsSkippedForRestoredBinlogOffset() {
         BinlogOffset timestampOffset = new BinlogOffset(1716076800L);
         BinlogOffset restoredOffset = new BinlogOffset("mysql-bin.000021", 4096L);
