@@ -1056,7 +1056,7 @@ class SparkMicroBatchReaderTest {
                         new MultiTableManager(new CatalogTable[] {table()})));
         assertThrows(IOException.class, () -> read(source, 1, 3));
         assertFalse(java.nio.file.Files.exists(checkpoint.resolve("seatunnel-batches/0/3")));
-
+        source.restoreEvent = true;
         try (SparkMicroBatchReader reader = schemaReader(source, 3)) {
             assertTrue(reader.next());
             assertEquals(4, reader.get().numFields());
@@ -1357,6 +1357,115 @@ class SparkMicroBatchReaderTest {
                     }
                 };
         assertEquals(Arrays.asList(1, 2, 3), read(source, 1, 1));
+    }
+
+    @Test
+    void localRestoreEventRefreshesCollectorWithoutPublishingDdl() throws Exception {
+        TestSource source = collectorSource(Collections.singletonList(table()), true);
+        assertEquals(Collections.singletonList(42), read(source, 1, 1));
+        assertEquals(SparkSourceCheckpoint.Phase.DATA, metadata(1).getPhase());
+        assertTrue(metadata(1).getEvents().isEmpty());
+        assertEquals(TYPE, metadata(1).getTables().get(0).getSeaTunnelRowType());
+        assertEquals(1, source.closedReaders.get());
+    }
+
+    @Test
+    void emptyLegacyCollectorMetadataKeepsAnalyzedConverter() throws Exception {
+        TestSource source = collectorSource(Collections.emptyList(), false);
+        assertEquals(Collections.singletonList(42), read(source, 1, 1));
+        assertTrue(metadata(1).getEvents().isEmpty());
+        assertEquals(TYPE, metadata(1).getTables().get(0).getSeaTunnelRowType());
+        assertEquals(1, source.closedReaders.get());
+    }
+
+    @Test
+    void restoredCollectorRejectsChangedAnalyzedShapeBeforePublishingRows() throws Exception {
+        TestSource source = collectorSource(Collections.singletonList(evolvedTable()), false);
+        assertThrows(IOException.class, () -> read(source, 1, 1));
+        assertFalse(java.nio.file.Files.exists(checkpoint.resolve("seatunnel-batches/0/1")));
+        assertEquals(1, source.closedReaders.get());
+    }
+
+    @Test
+    void restoredCollectorRejectsSameMergedShapeWithDifferentTableLayout() throws Exception {
+        CatalogTable renamed =
+                CatalogTableUtil.getCatalogTable(
+                        "test",
+                        "db",
+                        "schema",
+                        "records",
+                        new SeaTunnelRowType(
+                                new String[] {"renamed"},
+                                new SeaTunnelDataType[] {BasicType.INT_TYPE}));
+        CatalogTable other =
+                CatalogTableUtil.getCatalogTable("test", "db", "schema", "other", TYPE);
+        MultiTableManager analyzed = new MultiTableManager(new CatalogTable[] {table(), other});
+        MultiTableManager restored = new MultiTableManager(new CatalogTable[] {renamed, other});
+        assertEquals(analyzed.getTableSchema(), restored.getTableSchema());
+        TestSource source = collectorSource(Arrays.asList(renamed, other), false);
+        try (SparkMicroBatchReader reader =
+                new SparkMicroBatchReader(
+                        source,
+                        1,
+                        "test-job",
+                        0,
+                        1,
+                        2000,
+                        checkpoint.toUri().toString(),
+                        "file:///",
+                        "",
+                        Collections.emptyMap(),
+                        analyzed)) {
+            assertThrows(IOException.class, reader::next);
+        }
+        assertFalse(java.nio.file.Files.exists(checkpoint.resolve("seatunnel-batches/0/1")));
+        assertEquals(1, source.closedReaders.get());
+    }
+
+    private TestSource collectorSource(List<CatalogTable> restoredTables, boolean restoreEvent) {
+        return new TestSource() {
+            @Override
+            public SourceReader<SeaTunnelRow, TestSplit> createReader(
+                    SourceReader.Context context) {
+                return new SourceReader<SeaTunnelRow, TestSplit>() {
+                    boolean emitted;
+
+                    public void open() {}
+
+                    public void close() {
+                        closedReaders.incrementAndGet();
+                    }
+
+                    public void addSplits(List<TestSplit> splits) {}
+
+                    public void handleNoMoreSplits() {}
+
+                    public void notifyCheckpointComplete(long id) {
+                        acknowledged.add(id);
+                    }
+
+                    public List<TestSplit> snapshotState(long id) {
+                        return Collections.singletonList(new TestSplit(emitted ? 1 : 0));
+                    }
+
+                    public void pollNext(Collector<SeaTunnelRow> output) {
+                        synchronized (output.getCheckpointLock()) {
+                            if (!emitted) {
+                                output.restoreSchema(restoredTables);
+                                if (restoreEvent) {
+                                    output.collect(
+                                            new org.apache.seatunnel.api.table.schema.event
+                                                    .RestoreTableSchemaEvent(table()));
+                                }
+                                output.collect(new SeaTunnelRow(new Object[] {42}));
+                                emitted = true;
+                            }
+                        }
+                        context.signalNoMoreElement();
+                    }
+                };
+            }
+        };
     }
 
     private SparkSourceCheckpoint metadata(int id) throws Exception {

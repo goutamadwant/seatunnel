@@ -22,6 +22,7 @@ import org.apache.seatunnel.api.source.SeaTunnelSource;
 import org.apache.seatunnel.api.source.SupportCoordinate;
 import org.apache.seatunnel.api.source.SupportSchemaChangeWatermarks;
 import org.apache.seatunnel.api.table.catalog.CatalogTable;
+import org.apache.seatunnel.api.table.schema.event.RestoreTableSchemaEvent;
 import org.apache.seatunnel.api.table.schema.event.SchemaChangeEvent;
 import org.apache.seatunnel.api.table.type.SeaTunnelRow;
 import org.apache.seatunnel.common.Handover;
@@ -306,8 +307,9 @@ public final class SparkMicroBatchReader implements Closeable {
                 new DataOutputStream(fs.create(new Path(temporary, "rows"), false));
         Throwable primaryFailure = null;
         try {
-            InternalRowCollector delegate =
-                    tables.getInternalRowCollector(handover, checkpointLock, options);
+            AtomicReference<InternalRowCollector> delegate =
+                    new AtomicReference<>(
+                            tables.getInternalRowCollector(handover, checkpointLock, options));
             Collector<SeaTunnelRow> collector =
                     new Collector<SeaTunnelRow>() {
                         @Override
@@ -348,7 +350,7 @@ public final class SparkMicroBatchReader implements Closeable {
                                                         "A new-schema row preceded its Spark after-watermark boundary");
                                             }
                                         }
-                                        delegate.collect(row);
+                                        delegate.get().collect(row);
                                     });
                         }
 
@@ -356,6 +358,14 @@ public final class SparkMicroBatchReader implements Closeable {
                         public void collect(SchemaChangeEvent event) {
                             checkpointAction(
                                     () -> {
+                                        if (event instanceof RestoreTableSchemaEvent) {
+                                            List<CatalogTable> refreshed =
+                                                    replaceTable(
+                                                            catalogTables.get(),
+                                                            event.getChangeAfter());
+                                            restoreSchema(refreshed);
+                                            return;
+                                        }
                                         if (!schemaOnly || event.getChangeAfter() == null) {
                                             throw new IllegalStateException(
                                                     "Spark schema events require a before-watermark boundary and an evolved catalog");
@@ -386,6 +396,10 @@ public final class SparkMicroBatchReader implements Closeable {
                                             throw new IllegalStateException(
                                                     "Restored collector schema requires Spark query reanalysis before rows are admitted");
                                         }
+                                        catalogTables.set(new ArrayList<>(restoredTables));
+                                        delegate.set(
+                                                restoredManager.getInternalRowCollector(
+                                                        handover, checkpointLock, options));
                                     });
                         }
 
@@ -453,12 +467,12 @@ public final class SparkMicroBatchReader implements Closeable {
 
                         @Override
                         public boolean isEmptyThisPollNext() {
-                            return delegate.isEmptyThisPollNext();
+                            return delegate.get().isEmptyThisPollNext();
                         }
 
                         @Override
                         public void resetEmptyThisPollNext() {
-                            delegate.resetEmptyThisPollNext();
+                            delegate.get().resetEmptyThisPollNext();
                         }
                     };
             internal =
