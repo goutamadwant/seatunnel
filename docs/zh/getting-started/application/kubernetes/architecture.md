@@ -110,7 +110,7 @@ kubernetes {
 
 HA 部署两个普通原生 Zeta Master 和固定 Worker Pod。ClusterIP 提供稳定的客户端入口，headless
 Service 提供各 Master 独立的发现地址；成员公布自己的 Pod 地址。首次提交前等待两个 Master
-及全部 Worker 加入同一集群，元数据使用一个原生同步备份。
+及全部 Worker 加入同一集群。HA 模式的调度和备份设置见[配置](configuration.md)。
 
 ### 部署与原生运行时
 
@@ -160,8 +160,8 @@ coordinator 生命周期隔离问题，未覆盖上述全部恢复场景。如�
 
 ### HA 权限
 
-提交端和 owner 使用独立的 namespace 级身份；Master 和 Worker 不得获得 owner Role 或 Kubernetes API
-令牌，无需集群级权限。HA 集成测试使用以下同一份权限清单：
+提交端和 owner 使用独立的 namespace 级身份。在 HA 模式下，仅在 owner Pod 上启用 Kubernetes API
+令牌的自动挂载，无需集群级权限。HA 集成测试使用以下同一份权限清单：
 
 - [提交端 Role](../../../../en/getting-started/application/kubernetes/ha-submitter-role.yaml)：
   Job `create/get/patch/delete`、Pod `create/list/delete/deletecollection`、StatefulSet `create`、
@@ -181,14 +181,14 @@ coordinator 生命周期隔离问题，未覆盖上述全部恢复场景。如�
 
 ```bash
 kubectl -n seatunnel-apps apply -f ha-submitter-role.yaml -f ha-owner-role.yaml
-kubectl -n seatunnel-apps create rolebinding seatunnel-submitter \
-  --role=seatunnel-application-submitter --user=SUBMITTER
-kubectl -n seatunnel-apps create serviceaccount application
-kubectl -n seatunnel-apps create rolebinding seatunnel-owner \
-  --role=application --serviceaccount=seatunnel-apps:application
+kubectl -n seatunnel-apps create rolebinding seatunnel-application-ha-submitter \
+  --role=seatunnel-application-ha-submitter --user=SUBMITTER
+kubectl -n seatunnel-apps create serviceaccount seatunnel-application-ha-owner
+kubectl -n seatunnel-apps create rolebinding seatunnel-application-ha-owner \
+  --role=seatunnel-application-ha-owner --serviceaccount=seatunnel-apps:seatunnel-application-ha-owner
 ```
 
-设置 `kubernetes.service-account = application` 使用该 owner 身份。上述 Role 不授予 RBAC 管理或用户 PVC
+设置 `kubernetes.service-account = seatunnel-application-ha-owner` 使用该 owner 身份。上述 Role 不授予 RBAC 管理或用户 PVC
 创建权限，这些资源仍由管理员负责。
 
 ### 验收

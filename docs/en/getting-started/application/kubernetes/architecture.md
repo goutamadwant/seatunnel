@@ -114,7 +114,8 @@ kubernetes {
 HA deploys two ordinary native Zeta masters and a fixed pool of worker Pods. A stable
 ClusterIP provides client access; the headless discovery Service gives each master a distinct
 peer address. Members advertise their own Pod addresses. Both masters must join the same cluster,
-and all workers must join, before initial submission. One synchronous native map backup is configured.
+and all workers must join, before initial submission. See [Configuration](configuration.md) for the scheduling
+and backup settings applied in HA mode.
 
 ### Deployment and native runtime
 
@@ -183,8 +184,8 @@ before that path can be considered safe; the deployment-only scope does not waiv
 
 ### HA permissions
 
-Use separate namespace-scoped identities for the submitter and the owner; masters and workers
-must not receive the owner Role or a Kubernetes API token. No cluster-scoped permissions are needed.
+Use separate namespace-scoped identities for the submitter and the owner. The HA owner Pod is the
+only HA Pod configured to mount a Kubernetes API token automatically. No cluster-scoped permissions are needed.
 The following manifests are also used by the HA integration tests:
 
 - [Submitter Role](./ha-submitter-role.yaml): Job `create/get/patch/delete`, Pod
@@ -210,14 +211,14 @@ An administrator applies and binds these Roles before submission, replacing `sea
 
 ```bash
 kubectl -n seatunnel-apps apply -f ha-submitter-role.yaml -f ha-owner-role.yaml
-kubectl -n seatunnel-apps create rolebinding seatunnel-submitter \
-  --role=seatunnel-application-submitter --user=SUBMITTER
-kubectl -n seatunnel-apps create serviceaccount application
-kubectl -n seatunnel-apps create rolebinding seatunnel-owner \
-  --role=application --serviceaccount=seatunnel-apps:application
+kubectl -n seatunnel-apps create rolebinding seatunnel-application-ha-submitter \
+  --role=seatunnel-application-ha-submitter --user=SUBMITTER
+kubectl -n seatunnel-apps create serviceaccount seatunnel-application-ha-owner
+kubectl -n seatunnel-apps create rolebinding seatunnel-application-ha-owner \
+  --role=seatunnel-application-ha-owner --serviceaccount=seatunnel-apps:seatunnel-application-ha-owner
 ```
 
-Set `kubernetes.service-account = application` to use that owner identity. These Roles do not grant
+Set `kubernetes.service-account = seatunnel-application-ha-owner` to use that owner identity. These Roles do not grant
 permission to manage RBAC or provision user PVCs; administrators retain those responsibilities.
 
 ### Acceptance checks

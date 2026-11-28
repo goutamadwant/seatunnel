@@ -32,12 +32,12 @@ Application Mode 在提交机上读取部署文件（`-a`，包含 `application.
 | --- | --- | --- | --- | --- |
 | `kubernetes.ha.enabled` | boolean | 否 | `false` | 启用双 Master 原生 Zeta HA；见[架构](architecture.md)。 |
 | `kubernetes.master.replicas` | int | 否 | `1` | 非 HA 必须为 1，HA 必须为 2。 |
-| `kubernetes.ha.backup-count` | int | 否 | HA 中为 `1` | HA 必须使用一个原生同步备份。 |
+| `kubernetes.ha.backup-count` | int | 否 | HA 中为 `1` | 仅在 `kubernetes.ha.enabled` 为 `true` 时可配置，且只接受 `1`。单 Master 模式须省略此项。 |
 | `kubernetes.namespace` | string | no | `default` | 所有 application 资源所在的已有 Namespace。 |
 | `kubernetes.image` | string | yes | - | 包含 SeaTunnel、provider 和作业插件的镜像。 |
 | `kubernetes.image-pull-policy` | enum | no | `IfNotPresent` | `Always`、`IfNotPresent` 或 `Never`。 |
 | `kubernetes.image-pull-secrets` | list | no | - | 用于拉取私有仓库镜像的已有 Secret 名称，多个名称以逗号分隔。 |
-| `kubernetes.service-account` | string | no | `default` | Master 使用的已有 ServiceAccount。 |
+| `kubernetes.service-account` | string | no | `default` | 分配给 application Pod 的已有 ServiceAccount。SeaTunnel 仅在单 Master Pod 或 HA owner Pod 上启用 API 令牌的自动挂载。 |
 | `kubernetes.seatunnel-home` | string | no | `/opt/seatunnel` | 镜像内发行包绝对路径，不能包含 `:`。 |
 | `kubernetes.configmap.<entry>` | map | no | - | ConfigMap 挂载条目：`ref` 引用已有 ConfigMap 并按 `subPath` 挂载声明的 key；`data` 则由 SeaTunnel 创建并持有 ConfigMap。可选 `name` 覆盖默认的 `<application-id>-<entry>`，便于其他配置按名字引用。 |
 | `kubernetes.secret-ref` | string | no | - | 已有 Secret，只读挂载到 `/etc/seatunnel-secrets/application`，永不创建或删除；由它提供作业配置时，把 `kubernetes.job-config-file` 指向 `<secret-directory>/job.conf`。 |
@@ -96,6 +96,12 @@ HA owner 客户端使用配置的 Master 资源、至少 512Mi 内存和相同�
 事件观察；Master 使用同一超时等待 Worker。
 :::
 
+## HA 引擎设置
+
+在 HA Master 和 Worker 上，SeaTunnel 将 `job-schedule-strategy` 设为 `WAIT`，将引擎备份数设为 `1`，
+并将每个 Hazelcast Map 设为一个同步备份、零个异步备份。这些值会覆盖挂载的引擎和 Hazelcast 配置中的
+对应设置。即使挂载的配置指定了 `REJECT`，作业仍会等待可用的 Slot。
+
 ## 镜像与凭据
 
 通过 `kubernetes.image-pull-secrets` 引用已有的私有镜像仓库 Secret。
@@ -107,7 +113,7 @@ Provider 不创建这类凭据，也不提供任意 Pod template。Connector 引
 
 ## 权限
 
-访问 Kubernetes API 的有两个身份。
+单 Master 模式下有两个身份访问 Kubernetes API。HA 模式的提交端和 owner 权限见[架构](architecture.md)。
 
 **Master Pod** 以 `kubernetes.service-account` 运行，需要：
 
@@ -495,4 +501,5 @@ Pod request 与 limit 相同。需要同时规划 Worker 数、slot 数、作业
 ResourceQuota、LimitRange 和节点容量。Master 不提供 task slot。
 :::
 
-HA 模式下 Master 和 Worker 共享运行时装饰器；checkpoint PVC 仅挂载到 Master。owner 客户端接收作业配置和所需环境变量、Secret/ConfigMap 挂载。上述权限表描述默认单 Master 模式；启用 HA 时还须遵循[HA 架构权限](architecture.md)。
+HA 模式下 Master 和 Worker 共享运行时装饰器，checkpoint PVC 仅挂载到 Master。
+owner 客户端接收作业配置以及所需的环境变量和 Secret/ConfigMap 挂载。启用 HA 时，请使用[专用的 HA 权限](architecture.md)。

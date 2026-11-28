@@ -33,12 +33,12 @@ Command-line overrides (`-Dkey=value`) may be visible to other users on the subm
 | --- | --- | --- | --- | --- |
 | `kubernetes.ha.enabled` | boolean | no | `false` | Enable dual-master native Zeta HA; see [HA architecture](architecture.md#opt-in-application-ha). |
 | `kubernetes.master.replicas` | int | no | `1` | Exactly 1 without HA; exactly 2 with HA. |
-| `kubernetes.ha.backup-count` | int | no | `1` in HA | HA requires exactly one native synchronous backup. |
+| `kubernetes.ha.backup-count` | int | no | `1` in HA | Accepted only when `kubernetes.ha.enabled` is `true`. The only supported value is `1`. Omit this setting in single-master mode. |
 | `kubernetes.namespace` | string | no | `default` | Existing namespace containing all application resources. |
 | `kubernetes.image` | string | yes | - | Image containing SeaTunnel, the provider, and job plugins. |
 | `kubernetes.image-pull-policy` | enum | no | `IfNotPresent` | `Always`, `IfNotPresent`, or `Never`. |
 | `kubernetes.image-pull-secrets` | list | no | - | Comma-separated existing Secret names used to pull images from private registries. |
-| `kubernetes.service-account` | string | no | `default` | Existing ServiceAccount used by the master. |
+| `kubernetes.service-account` | string | no | `default` | Existing ServiceAccount assigned to application Pods. SeaTunnel enables automatic API token mounting on the single-master Pod or the HA owner Pod only. |
 | `kubernetes.seatunnel-home` | string | no | `/opt/seatunnel` | Absolute distribution path in the image, without `:`. |
 | `kubernetes.configmap.<entry>` | map | no | - | ConfigMap mount entry: `ref` references an existing ConfigMap and mounts declared keys through `subPath`, while `data` entries are written into a ConfigMap SeaTunnel creates and owns. An optional `name` overrides the default `<application-id>-<entry>` so other options can reference it. |
 | `kubernetes.secret-ref` | string | no | - | Existing Secret mounted read-only at `/etc/seatunnel-secrets/application`; never created or deleted. Point `kubernetes.job-config-file` at `<secret-directory>/job.conf` when it carries the job configuration. |
@@ -98,6 +98,13 @@ or scheduling problems never fail the submit command; observe them with `status`
 The master uses the same timeout separately for workers.
 :::
 
+## HA engine settings
+
+On HA masters and workers, SeaTunnel sets `job-schedule-strategy` to `WAIT`, sets the engine backup
+count to `1`, and configures each Hazelcast map with one synchronous backup and zero asynchronous
+backups. These values override the corresponding settings in the mounted engine and Hazelcast
+configuration. A job waits for available slots even if the mounted configuration specifies `REJECT`.
+
 ## Images and registry credentials
 
 Use `kubernetes.image-pull-secrets` for existing private-registry Secrets.
@@ -110,7 +117,8 @@ image.
 
 ## Permissions
 
-Two identities access the Kubernetes API.
+In single-master mode, two identities access the Kubernetes API. For HA, see the separate
+[submitter and owner permissions](architecture.md#ha-permissions).
 
 The **master Pod** runs with `kubernetes.service-account` and needs:
 
@@ -519,4 +527,6 @@ Pod requests equal limits. Plan worker count, worker slots, job parallelism, Res
 LimitRange, and node capacity together. The master does not provide task slots.
 :::
 
-In HA mode masters and workers use the shared runtime decorators. Only masters mount the checkpoint PVC. The owner client receives the job specification and required environment/Secret/ConfigMap mounts. The permissions above describe the default single-master mode; apply the additional [HA permissions](architecture.md#ha-permissions) when enabling HA.
+In HA mode masters and workers use the shared runtime decorators. Only masters mount the checkpoint PVC.
+The owner client receives the job specification and required environment/Secret/ConfigMap mounts.
+Use the dedicated [HA permissions](architecture.md#ha-permissions) when enabling HA.

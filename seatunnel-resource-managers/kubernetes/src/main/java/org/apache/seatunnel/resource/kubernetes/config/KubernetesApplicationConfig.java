@@ -139,11 +139,30 @@ public final class KubernetesApplicationConfig {
         this.masterReplicas = options.get(KubernetesOptions.MASTER_REPLICAS);
         Integer backupCount = options.get(KubernetesOptions.HA_BACKUP_COUNT);
         this.haBackupCount = haEnabled ? (backupCount == null ? 1 : backupCount) : 0;
-        if (haEnabled
-                ? masterReplicas != 2 || haBackupCount != 1
-                : masterReplicas != 1 || backupCount != null) {
+        int expectedReplicas = haEnabled ? 2 : 1;
+        if (masterReplicas != expectedReplicas) {
             throw new IllegalArgumentException(
-                    "Kubernetes HA requires exactly 2 masters and 1 synchronous backup; single-master mode requires replicas=1 and no HA backup override");
+                    KubernetesOptions.MASTER_REPLICAS.key()
+                            + " must be "
+                            + expectedReplicas
+                            + " when "
+                            + KubernetesOptions.HA_ENABLED.key()
+                            + " is "
+                            + haEnabled
+                            + ", got "
+                            + masterReplicas);
+        }
+        if (haEnabled && haBackupCount != 1) {
+            throw new IllegalArgumentException(
+                    KubernetesOptions.HA_BACKUP_COUNT.key()
+                            + " must be 1 in HA mode, got "
+                            + haBackupCount);
+        }
+        if (!haEnabled && backupCount != null) {
+            throw new IllegalArgumentException(
+                    KubernetesOptions.HA_BACKUP_COUNT.key()
+                            + " must be omitted in single-master mode, got "
+                            + backupCount);
         }
         this.namespace = requireNonBlank(options, KubernetesOptions.NAMESPACE);
         this.image = requireNonBlank(options, KubernetesOptions.IMAGE);

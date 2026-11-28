@@ -18,7 +18,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: seatunnel-application-submitter
+  name: seatunnel-application-ha-submitter
 rules:
   - apiGroups: [batch]
     resources: [jobs]

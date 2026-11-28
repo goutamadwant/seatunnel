@@ -18,76 +18,101 @@
 package org.apache.seatunnel.resource.kubernetes.worker;
 
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedConstruction;
 
+import java.io.IOException;
+import java.net.ConnectException;
+import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import java.net.SocketAddress;
 import java.util.concurrent.TimeUnit;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mockConstruction;
 
 class SeatunnelKubernetesApplicationWorkerTest {
+    private static final String ADDRESS = "127.0.0.1:12345";
 
     @Test
-    void waitsForDelayedMasterServiceBeforeJoining() throws Exception {
-        int port = unusedPort();
-        ExecutorService executor = Executors.newSingleThreadExecutor();
-        try {
-            Future<Boolean> accepted =
-                    executor.submit(
-                            () -> {
-                                TimeUnit.MILLISECONDS.sleep(250);
-                                try (ServerSocket server = new ServerSocket(port)) {
-                                    server.setSoTimeout(3000);
-                                    try (Socket connection = server.accept()) {
-                                        return connection.isConnected();
-                                    }
-                                }
-                            });
-            SeatunnelKubernetesApplicationWorker.awaitMasterService("127.0.0.1:" + port, 3000);
-            assertTrue(accepted.get(4, TimeUnit.SECONDS));
-        } finally {
-            executor.shutdownNow();
+    void connectsToListeningMasterService() throws Exception {
+        try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
+            server.setSoTimeout(3000);
+            SeatunnelKubernetesApplicationWorker.awaitMasterService(
+                    "127.0.0.1:" + server.getLocalPort(), 3000);
+            try (Socket connection = server.accept()) {
+                assertTrue(connection.isConnected());
+            }
         }
     }
 
     @Test
-    void failsWithinStartupDeadlineWhenMasterServiceNeverStarts() throws Exception {
-        String address = "127.0.0.1:" + unusedPort();
-        long started = System.nanoTime();
-        IllegalStateException failure =
-                assertThrows(
-                        IllegalStateException.class,
-                        () ->
-                                SeatunnelKubernetesApplicationWorker.awaitMasterService(
-                                        address, 150));
-        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
-        assertTrue(elapsedMillis >= 100, "The worker should allow its configured startup window");
-        assertTrue(elapsedMillis < 3000, "The worker must not wait indefinitely");
-        assertTrue(failure.getMessage().contains(address));
-        assertTrue(failure.getMessage().contains("150 ms"));
+    void retriesUntilMasterServiceAcceptsConnection() {
+        try (MockedConstruction<Socket> sockets =
+                mockConstruction(
+                        Socket.class,
+                        (socket, context) -> {
+                            if (context.getCount() == 1) {
+                                refuseConnections(socket);
+                            }
+                        })) {
+            SeatunnelKubernetesApplicationWorker.awaitMasterService(ADDRESS, 3000);
+            assertEquals(2, sockets.constructed().size());
+        }
     }
 
     @Test
-    void interruptionStopsWaitingAndPreservesInterruptStatus() throws Exception {
-        String address = "127.0.0.1:" + unusedPort();
-        Thread.currentThread().interrupt();
-        try {
-            assertThrows(
-                    IllegalStateException.class,
-                    () -> SeatunnelKubernetesApplicationWorker.awaitMasterService(address, 3000));
-            assertTrue(Thread.currentThread().isInterrupted());
-        } finally {
-            Thread.interrupted();
+    void failsWithinStartupDeadlineWhenMasterServiceNeverStarts() {
+        try (MockedConstruction<Socket> ignored = refusingSockets()) {
+            long started = System.nanoTime();
+            IllegalStateException failure =
+                    assertThrows(
+                            IllegalStateException.class,
+                            () ->
+                                    SeatunnelKubernetesApplicationWorker.awaitMasterService(
+                                            ADDRESS, 150));
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+            assertTrue(
+                    elapsedMillis >= 100, "The worker should allow its configured startup window");
+            assertTrue(elapsedMillis < 3000, "The worker must not wait indefinitely");
+            assertTrue(failure.getMessage().contains(ADDRESS));
+            assertTrue(failure.getMessage().contains("150 ms"));
+            assertInstanceOf(ConnectException.class, failure.getCause());
         }
     }
 
-    private static int unusedPort() throws Exception {
-        try (ServerSocket socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
+    @Test
+    void interruptionStopsWaitingAndPreservesInterruptStatus() {
+        try (MockedConstruction<Socket> ignored = refusingSockets()) {
+            Thread.currentThread().interrupt();
+            try {
+                IllegalStateException failure =
+                        assertThrows(
+                                IllegalStateException.class,
+                                () ->
+                                        SeatunnelKubernetesApplicationWorker.awaitMasterService(
+                                                ADDRESS, 3000));
+                assertInstanceOf(InterruptedException.class, failure.getCause());
+                assertTrue(Thread.currentThread().isInterrupted());
+            } finally {
+                Thread.interrupted();
+            }
         }
+    }
+
+    private static MockedConstruction<Socket> refusingSockets() {
+        return mockConstruction(Socket.class, (socket, context) -> refuseConnections(socket));
+    }
+
+    private static void refuseConnections(Socket socket) throws IOException {
+        doThrow(new ConnectException("Connection refused"))
+                .when(socket)
+                .connect(any(SocketAddress.class), anyInt());
     }
 }

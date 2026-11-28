@@ -44,7 +44,7 @@ public final class KubernetesOptions {
                     .intType()
                     .noDefaultValue()
                     .withDescription(
-                            "HA requires one native synchronous backup; defaults to one independently of submitter configuration.");
+                            "Accepted only when Kubernetes HA is enabled. The only supported value is 1, which is also the default in HA mode.");
 
     public static final Option<String> NAMESPACE =
             Options.key("kubernetes.namespace")

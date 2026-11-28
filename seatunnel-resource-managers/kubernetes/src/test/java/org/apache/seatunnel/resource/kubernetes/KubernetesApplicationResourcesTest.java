@@ -2175,12 +2175,13 @@ class KubernetesApplicationResourcesTest {
     void rejectsInvalidHaBeforeAnyResourceMutation() throws Exception {
         for (String[] combination :
                 new String[][] {
-                    {"true", "1", "1"},
-                    {"true", "2", "0"},
-                    {"true", "2", "2"},
-                    {"false", "2", "1"},
-                    {"true", "8", "7"},
-                    {"true", "3", "1"}
+                    {"true", "1", "1", KubernetesOptions.MASTER_REPLICAS.key(), "1"},
+                    {"true", "2", "0", KubernetesOptions.HA_BACKUP_COUNT.key(), "0"},
+                    {"true", "2", "2", KubernetesOptions.HA_BACKUP_COUNT.key(), "2"},
+                    {"false", "2", "1", KubernetesOptions.MASTER_REPLICAS.key(), "2"},
+                    {"false", "1", "1", KubernetesOptions.HA_BACKUP_COUNT.key(), "1"},
+                    {"true", "8", "7", KubernetesOptions.MASTER_REPLICAS.key(), "8"},
+                    {"true", "3", "1", KubernetesOptions.MASTER_REPLICAS.key(), "3"}
                 }) {
             Map<String, String> values = options();
             values.put(KubernetesOptions.HA_ENABLED.key(), combination[0]);
@@ -2189,9 +2190,14 @@ class KubernetesApplicationResourcesTest {
             KubernetesClient api = mock(KubernetesClient.class);
             try (KubernetesApplicationClusterDescriptor descriptor =
                     new KubernetesApplicationClusterDescriptor(api, values)) {
-                assertThrows(
-                        IllegalArgumentException.class,
-                        () -> descriptor.deployApplication(specification()));
+                IllegalArgumentException exception =
+                        assertThrows(
+                                IllegalArgumentException.class,
+                                () -> descriptor.deployApplication(specification()));
+                assertTrue(exception.getMessage().contains(combination[3]), exception.getMessage());
+                assertTrue(
+                        exception.getMessage().endsWith("got " + combination[4]),
+                        exception.getMessage());
                 org.mockito.Mockito.verifyNoInteractions(api);
             }
         }

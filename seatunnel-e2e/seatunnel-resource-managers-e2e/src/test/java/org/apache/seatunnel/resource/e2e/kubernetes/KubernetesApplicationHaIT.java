@@ -94,25 +94,16 @@ public class KubernetesApplicationHaIT extends AbstractKubernetesApplicationIT {
     private static final Logger LOG = LoggerFactory.getLogger(KubernetesApplicationHaIT.class);
     private static final String CLAIM = "ha-application-checkpoints";
     private static final String INSPECTOR = "ha-user-inspector";
+    private static final String OWNER_ACCOUNT = "seatunnel-application-ha-owner";
+    private static final String SUBMITTER_ACCOUNT = "seatunnel-application-ha-submitter";
     private String pvcUid;
     private String secretUid;
     private String runtimeUid;
-    private V1Role legacyRole;
 
     @Override
     protected void startScenarioFixtures() throws Exception {
-        RbacAuthorizationV1Api rbac = new RbacAuthorizationV1Api(apiClient);
-        legacyRole = rbac.readNamespacedRole("application", namespace, null);
-        // Exercise the documented owner Role, without legacy worker-creation permissions.
-        V1Role ownerRole =
-                Yaml.loadAs(
-                        Paths.get(
-                                        PROJECT_ROOT_PATH,
-                                        "docs/en/getting-started/application/kubernetes/ha-owner-role.yaml")
-                                .toFile(),
-                        V1Role.class);
-        ownerRole.getMetadata().setResourceVersion(legacyRole.getMetadata().getResourceVersion());
-        rbac.replaceNamespacedRole("application", namespace, ownerRole, null, null, null, null);
+        // The shared single-master Role stays in place when the HA Role is installed.
+        createRoleFixture("ha-owner-role.yaml", OWNER_ACCOUNT);
         V1PersistentVolumeClaim claim =
                 Yaml.loadAs(suiteFile("checkpoints-pvc.yaml"), V1PersistentVolumeClaim.class);
         claim.getMetadata().setName(CLAIM);
@@ -199,23 +190,67 @@ public class KubernetesApplicationHaIT extends AbstractKubernetesApplicationIT {
             core.deleteNamespacedPersistentVolumeClaim(
                     CLAIM, namespace, null, null, null, null, "Background", null);
         } finally {
-            if (legacyRole != null) {
-                RbacAuthorizationV1Api rbac = new RbacAuthorizationV1Api(apiClient);
-                legacyRole
-                        .getMetadata()
-                        .setResourceVersion(
-                                rbac.readNamespacedRole("application", namespace, null)
-                                        .getMetadata()
-                                        .getResourceVersion());
-                rbac.replaceNamespacedRole(
-                        "application", namespace, legacyRole, null, null, null, null);
-            }
+            deleteRoleFixture(OWNER_ACCOUNT);
         }
     }
 
     @Test
     void documentedRolesCanSubmitRetrieveAndCancel() throws Exception {
-        String account = "ha-submitter";
+        try {
+            createRoleFixture("ha-submitter-role.yaml", SUBMITTER_ACCOUNT);
+            Path credentials = serviceAccountKubeconfig(SUBMITTER_ACCOUNT);
+            try {
+                validateRestrictedSubmission(credentials);
+            } finally {
+                Files.deleteIfExists(credentials);
+            }
+        } finally {
+            deleteRoleFixture(SUBMITTER_ACCOUNT);
+        }
+    }
+
+    private void validateRestrictedSubmission(Path credentials) throws Exception {
+        Map<String, String> options = new HashMap<>(haOptions());
+        options.put(KubernetesOptions.KUBE_CONFIG.key(), credentials.toString());
+        ApplicationSpecification specification =
+                SeatunnelApplicationConfig.parse(scenarioFile("ha", "job.conf").toPath(), options);
+        try (ClusterDescriptor<String> submitter =
+                        new KubernetesApplicationClusterDescriptorFactory().create(options);
+                KubernetesApplicationClient application =
+                        deployApplication(specification, options)) {
+            try {
+                awaitProgress(application, specification.getJobId(), -1);
+                assertEquals(
+                        ApplicationStatus.RUNNING,
+                        submitter.getApplicationStatus(application.getClusterId()));
+                assertNotNull(submitter.retrieve(application.getClusterId()));
+                submitter.cancelApplication(application.getClusterId());
+                Awaitility.await()
+                        .atMost(CLEANUP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                        .untilAsserted(() -> assertAllResourcesRemoved(application));
+                assertUserResourcesPreserved();
+            } catch (Exception | AssertionError failure) {
+                recordApplicationDiagnostics(application, null);
+                throw failure;
+            } finally {
+                cancelAndAwait(application);
+            }
+        }
+        assertRestrictedSubmissionRollback(options, specification);
+    }
+
+    private void createRoleFixture(String manifest, String account) throws Exception {
+        V1Role role =
+                Yaml.loadAs(
+                        Paths.get(
+                                        PROJECT_ROOT_PATH,
+                                        "docs/en/getting-started/application/kubernetes",
+                                        manifest)
+                                .toFile(),
+                        V1Role.class);
+        assertEquals(account, role.getMetadata().getName());
+        RbacAuthorizationV1Api rbac = new RbacAuthorizationV1Api(apiClient);
+        rbac.createNamespacedRole(namespace, role, null, null, null, null);
         core.createNamespacedServiceAccount(
                 namespace,
                 new V1ServiceAccount().metadata(new V1ObjectMeta().name(account)),
@@ -223,15 +258,6 @@ public class KubernetesApplicationHaIT extends AbstractKubernetesApplicationIT {
                 null,
                 null,
                 null);
-        RbacAuthorizationV1Api rbac = new RbacAuthorizationV1Api(apiClient);
-        V1Role role =
-                Yaml.loadAs(
-                        Paths.get(
-                                        PROJECT_ROOT_PATH,
-                                        "docs/en/getting-started/application/kubernetes/ha-submitter-role.yaml")
-                                .toFile(),
-                        V1Role.class);
-        rbac.createNamespacedRole(namespace, role, null, null, null, null);
         rbac.createNamespacedRoleBinding(
                 namespace,
                 new V1RoleBinding()
@@ -240,7 +266,7 @@ public class KubernetesApplicationHaIT extends AbstractKubernetesApplicationIT {
                                 new V1RoleRef()
                                         .apiGroup("rbac.authorization.k8s.io")
                                         .kind("Role")
-                                        .name(role.getMetadata().getName()))
+                                        .name(account))
                         .subjects(
                                 Collections.singletonList(
                                         new V1Subject()
@@ -251,39 +277,22 @@ public class KubernetesApplicationHaIT extends AbstractKubernetesApplicationIT {
                 null,
                 null,
                 null);
-        Path credentials = serviceAccountKubeconfig(account);
-        try {
-            Map<String, String> options = new HashMap<>(haOptions());
-            options.put(KubernetesOptions.KUBE_CONFIG.key(), credentials.toString());
-            ApplicationSpecification specification =
-                    SeatunnelApplicationConfig.parse(
-                            scenarioFile("ha", "job.conf").toPath(), options);
-            try (ClusterDescriptor<String> submitter =
-                            new KubernetesApplicationClusterDescriptorFactory().create(options);
-                    KubernetesApplicationClient application =
-                            deployApplication(specification, options)) {
-                try {
-                    awaitProgress(application, specification.getJobId(), -1);
-                    assertEquals(
-                            ApplicationStatus.RUNNING,
-                            submitter.getApplicationStatus(application.getClusterId()));
-                    assertNotNull(submitter.retrieve(application.getClusterId()));
-                    submitter.cancelApplication(application.getClusterId());
-                    Awaitility.await()
-                            .atMost(CLEANUP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                            .untilAsserted(() -> assertAllResourcesRemoved(application));
-                    assertUserResourcesPreserved();
-                } catch (Exception | AssertionError failure) {
-                    recordApplicationDiagnostics(application, null);
-                    throw failure;
-                } finally {
-                    cancelAndAwait(application);
-                }
-            }
-            assertRestrictedSubmissionRollback(options, specification);
-        } finally {
-            Files.deleteIfExists(credentials);
-        }
+    }
+
+    private void deleteRoleFixture(String account) throws Exception {
+        RbacAuthorizationV1Api rbac = new RbacAuthorizationV1Api(apiClient);
+        missing(
+                () ->
+                        rbac.deleteNamespacedRoleBinding(
+                                account, namespace, null, null, null, null, null, null));
+        missing(
+                () ->
+                        rbac.deleteNamespacedRole(
+                                account, namespace, null, null, null, null, null, null));
+        missing(
+                () ->
+                        core.deleteNamespacedServiceAccount(
+                                account, namespace, null, null, null, null, null, null));
     }
 
     private void assertRestrictedSubmissionRollback(
@@ -543,8 +552,8 @@ public class KubernetesApplicationHaIT extends AbstractKubernetesApplicationIT {
     @Test
     void unfinishedBatchHasExactOutputAfterActiveMasterLoss() throws Exception {
         RbacAuthorizationV1Api rbac = new RbacAuthorizationV1Api(apiClient);
-        V1Role original = rbac.readNamespacedRole("application", namespace, null);
-        V1Role restricted = rbac.readNamespacedRole("application", namespace, null);
+        V1Role original = rbac.readNamespacedRole(OWNER_ACCOUNT, namespace, null);
+        V1Role restricted = rbac.readNamespacedRole(OWNER_ACCOUNT, namespace, null);
         restricted.getRules().stream()
                 .filter(rule -> rule.getApiGroups().contains("apps"))
                 .forEach(rule -> rule.setVerbs(Collections.singletonList("get")));
@@ -561,7 +570,7 @@ public class KubernetesApplicationHaIT extends AbstractKubernetesApplicationIT {
                 // Keep the fixed worker alive at terminal status to inspect its local sink output.
                 // Workers deliberately do not inherit the checkpoint PVC.
                 rbac.replaceNamespacedRole(
-                        "application", namespace, restricted, null, null, null, null);
+                        OWNER_ACCOUNT, namespace, restricted, null, null, null, null);
                 String[] before = awaitProgress(application, specification.getJobId(), -1);
                 V1Pod worker = workers(application).get(0);
                 String workerMember = memberUid(before, worker);
@@ -619,11 +628,11 @@ public class KubernetesApplicationHaIT extends AbstractKubernetesApplicationIT {
                         worker.getMetadata().getUid());
                 original.getMetadata()
                         .setResourceVersion(
-                                rbac.readNamespacedRole("application", namespace, null)
+                                rbac.readNamespacedRole(OWNER_ACCOUNT, namespace, null)
                                         .getMetadata()
                                         .getResourceVersion());
                 rbac.replaceNamespacedRole(
-                        "application", namespace, original, null, null, null, null);
+                        OWNER_ACCOUNT, namespace, original, null, null, null, null);
                 awaitHaClean(application);
                 assertUserResourcesPreserved();
             } catch (Exception | AssertionError failure) {
@@ -632,11 +641,11 @@ public class KubernetesApplicationHaIT extends AbstractKubernetesApplicationIT {
             } finally {
                 original.getMetadata()
                         .setResourceVersion(
-                                rbac.readNamespacedRole("application", namespace, null)
+                                rbac.readNamespacedRole(OWNER_ACCOUNT, namespace, null)
                                         .getMetadata()
                                         .getResourceVersion());
                 rbac.replaceNamespacedRole(
-                        "application", namespace, original, null, null, null, null);
+                        OWNER_ACCOUNT, namespace, original, null, null, null, null);
                 cancelAndAwait(application);
             }
         }
@@ -768,8 +777,8 @@ public class KubernetesApplicationHaIT extends AbstractKubernetesApplicationIT {
     @Test
     void acceptedSinkFailureReleasesComputeAndPreservesUserResources() throws Exception {
         RbacAuthorizationV1Api rbac = new RbacAuthorizationV1Api(apiClient);
-        V1Role original = rbac.readNamespacedRole("application", namespace, null);
-        V1Role restricted = rbac.readNamespacedRole("application", namespace, null);
+        V1Role original = rbac.readNamespacedRole(OWNER_ACCOUNT, namespace, null);
+        V1Role restricted = rbac.readNamespacedRole(OWNER_ACCOUNT, namespace, null);
         restricted.getRules().stream()
                 .filter(rule -> rule.getApiGroups().contains("apps"))
                 .forEach(rule -> rule.setVerbs(Collections.singletonList("get")));
@@ -777,7 +786,7 @@ public class KubernetesApplicationHaIT extends AbstractKubernetesApplicationIT {
         try (KubernetesApplicationClient application = deployApplication(specification, "ha")) {
             try {
                 rbac.replaceNamespacedRole(
-                        "application", namespace, restricted, null, null, null, null);
+                        OWNER_ACCOUNT, namespace, restricted, null, null, null, null);
                 awaitStatus(application, ApplicationStatus.FAILED);
                 assertEquals(
                         "FAILED",
@@ -813,11 +822,11 @@ public class KubernetesApplicationHaIT extends AbstractKubernetesApplicationIT {
                         "The Assert sink must fail its configured MIN_LENGTH rule");
                 original.getMetadata()
                         .setResourceVersion(
-                                rbac.readNamespacedRole("application", namespace, null)
+                                rbac.readNamespacedRole(OWNER_ACCOUNT, namespace, null)
                                         .getMetadata()
                                         .getResourceVersion());
                 rbac.replaceNamespacedRole(
-                        "application", namespace, original, null, null, null, null);
+                        OWNER_ACCOUNT, namespace, original, null, null, null, null);
                 awaitHaClean(application);
                 assertUserResourcesPreserved();
             } catch (Exception | AssertionError failure) {
@@ -826,11 +835,11 @@ public class KubernetesApplicationHaIT extends AbstractKubernetesApplicationIT {
             } finally {
                 original.getMetadata()
                         .setResourceVersion(
-                                rbac.readNamespacedRole("application", namespace, null)
+                                rbac.readNamespacedRole(OWNER_ACCOUNT, namespace, null)
                                         .getMetadata()
                                         .getResourceVersion());
                 rbac.replaceNamespacedRole(
-                        "application", namespace, original, null, null, null, null);
+                        OWNER_ACCOUNT, namespace, original, null, null, null, null);
                 cancelAndAwait(application);
             }
         }
@@ -839,8 +848,8 @@ public class KubernetesApplicationHaIT extends AbstractKubernetesApplicationIT {
     @Test
     void terminalOwnerRetriesCleanupAfterApiPermissionReturns() throws Exception {
         RbacAuthorizationV1Api rbac = new RbacAuthorizationV1Api(apiClient);
-        V1Role original = rbac.readNamespacedRole("application", namespace, null);
-        V1Role restricted = rbac.readNamespacedRole("application", namespace, null);
+        V1Role original = rbac.readNamespacedRole(OWNER_ACCOUNT, namespace, null);
+        V1Role restricted = rbac.readNamespacedRole(OWNER_ACCOUNT, namespace, null);
         restricted.getRules().stream()
                 .filter(rule -> rule.getApiGroups().contains("apps"))
                 .forEach(rule -> rule.setVerbs(Collections.singletonList("get")));
@@ -848,7 +857,7 @@ public class KubernetesApplicationHaIT extends AbstractKubernetesApplicationIT {
         try (KubernetesApplicationClient application = deployApplication(specification, "ha")) {
             try {
                 rbac.replaceNamespacedRole(
-                        "application", namespace, restricted, null, null, null, null);
+                        OWNER_ACCOUNT, namespace, restricted, null, null, null, null);
                 awaitStatus(application, ApplicationStatus.SUCCEEDED);
                 assertEquals(
                         ApplicationStatus.SUCCEEDED,
@@ -868,11 +877,11 @@ public class KubernetesApplicationHaIT extends AbstractKubernetesApplicationIT {
                                                 null)));
                 original.getMetadata()
                         .setResourceVersion(
-                                rbac.readNamespacedRole("application", namespace, null)
+                                rbac.readNamespacedRole(OWNER_ACCOUNT, namespace, null)
                                         .getMetadata()
                                         .getResourceVersion());
                 rbac.replaceNamespacedRole(
-                        "application", namespace, original, null, null, null, null);
+                        OWNER_ACCOUNT, namespace, original, null, null, null, null);
                 awaitHaClean(application);
                 assertUserResourcesPreserved();
             } catch (Exception | AssertionError failure) {
@@ -881,11 +890,11 @@ public class KubernetesApplicationHaIT extends AbstractKubernetesApplicationIT {
             } finally {
                 original.getMetadata()
                         .setResourceVersion(
-                                rbac.readNamespacedRole("application", namespace, null)
+                                rbac.readNamespacedRole(OWNER_ACCOUNT, namespace, null)
                                         .getMetadata()
                                         .getResourceVersion());
                 rbac.replaceNamespacedRole(
-                        "application", namespace, original, null, null, null, null);
+                        OWNER_ACCOUNT, namespace, original, null, null, null, null);
                 cancelAndAwait(application);
             }
         }

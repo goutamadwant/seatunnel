@@ -54,6 +54,7 @@ import io.kubernetes.client.openapi.ApiException;
 import io.kubernetes.client.openapi.apis.BatchV1Api;
 import io.kubernetes.client.openapi.apis.CoreV1Api;
 import io.kubernetes.client.openapi.apis.RbacAuthorizationV1Api;
+import io.kubernetes.client.openapi.models.AuthenticationV1TokenRequest;
 import io.kubernetes.client.openapi.models.CoreV1Event;
 import io.kubernetes.client.openapi.models.CoreV1EventList;
 import io.kubernetes.client.openapi.models.V1ConfigMap;
@@ -65,6 +66,8 @@ import io.kubernetes.client.openapi.models.V1Pod;
 import io.kubernetes.client.openapi.models.V1Role;
 import io.kubernetes.client.openapi.models.V1RoleBinding;
 import io.kubernetes.client.openapi.models.V1ServiceAccount;
+import io.kubernetes.client.openapi.models.V1TokenRequestSpec;
+import io.kubernetes.client.openapi.models.V1TokenRequestStatus;
 import io.kubernetes.client.util.Config;
 import io.kubernetes.client.util.KubeConfig;
 import io.kubernetes.client.util.Yaml;
@@ -90,6 +93,7 @@ import static org.apache.seatunnel.e2e.common.util.ContainerUtil.PROJECT_ROOT_PA
 import static org.apache.seatunnel.e2e.common.util.ContainerUtil.getResourcesFile;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -182,15 +186,22 @@ public abstract class AbstractKubernetesApplicationIT implements TestResource {
 
     /** Creates short-lived, token-only credentials while retaining the disposable cluster's CA. */
     protected static Path serviceAccountKubeconfig(String serviceAccount) throws Exception {
-        Container.ExecResult issued =
-                execInCluster(
-                        "kubectl",
-                        "create",
-                        "token",
+        AuthenticationV1TokenRequest issued =
+                core.createNamespacedServiceAccountToken(
                         serviceAccount,
-                        "--namespace=" + namespace,
-                        "--duration=1h");
-        assertEquals(0, issued.getExitCode(), "Cannot issue the fixture ServiceAccount token");
+                        namespace,
+                        new AuthenticationV1TokenRequest()
+                                .spec(
+                                        new V1TokenRequestSpec()
+                                                .expirationSeconds(TimeUnit.HOURS.toSeconds(1))),
+                        null,
+                        null,
+                        null,
+                        null);
+        V1TokenRequestStatus status = issued.getStatus();
+        assertNotNull(status, "Missing status for the fixture ServiceAccount token request");
+        String token = status.getToken();
+        assertTrue(token != null && !token.isBlank(), "Missing fixture ServiceAccount token");
         KubeConfig cluster;
         try (Reader input = Files.newBufferedReader(kubeconfig, StandardCharsets.UTF_8)) {
             cluster = KubeConfig.loadKubeConfig(input);
@@ -213,11 +224,7 @@ public abstract class AbstractKubernetesApplicationIT implements TestResource {
         configuration.put(
                 "users",
                 Collections.singletonList(
-                        Map.of(
-                                "name",
-                                "fixture",
-                                "user",
-                                Map.of("token", issued.getStdout().trim()))));
+                        Map.of("name", "fixture", "user", Map.of("token", token))));
         configuration.put(
                 "contexts",
                 Collections.singletonList(
