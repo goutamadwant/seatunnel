@@ -20,13 +20,16 @@ package org.apache.seatunnel.engine.server.master;
 import org.apache.seatunnel.common.utils.ReflectionUtils;
 import org.apache.seatunnel.engine.common.config.SeaTunnelConfig;
 import org.apache.seatunnel.engine.common.config.server.SlotServiceConfig;
+import org.apache.seatunnel.engine.common.job.JobStatus;
 import org.apache.seatunnel.engine.core.dag.logical.LogicalDag;
 import org.apache.seatunnel.engine.core.job.JobImmutableInformation;
+import org.apache.seatunnel.engine.core.job.PipelineStatus;
 import org.apache.seatunnel.engine.server.AbstractSeaTunnelServerTest;
 import org.apache.seatunnel.engine.server.TestUtils;
 import org.apache.seatunnel.engine.server.dag.physical.PhysicalVertex;
 import org.apache.seatunnel.engine.server.dag.physical.PipelineLocation;
 import org.apache.seatunnel.engine.server.dag.physical.SubPlan;
+import org.apache.seatunnel.engine.server.execution.ExecutionState;
 import org.apache.seatunnel.engine.server.execution.TaskGroupLocation;
 import org.apache.seatunnel.engine.server.resourcemanager.NoEnoughResourceException;
 import org.apache.seatunnel.engine.server.resourcemanager.ResourceManager;
@@ -80,6 +83,50 @@ public class JobMasterMasterFailoverResourceTest
 
         try {
             Assertions.assertTrue(restored.preApplyResources());
+        } finally {
+            resourceManager.releaseResources(jobId + 1, blockerSlots).join();
+            releasePersistedSlots(resourceManager, original, jobId);
+        }
+    }
+
+    @Test
+    void testRestoreDoesNotRequestSlotForFinishedTaskGroup() throws Exception {
+        long jobId = instance.getFlakeIdGenerator("master-failover-finished-task").newId();
+        ResourceManager resourceManager = server.getCoordinatorService().getResourceManager();
+        Data jobData = createJobImmutableInformationData(jobId);
+        JobMaster original = newJobMaster(jobId, jobData);
+        original.init(System.currentTimeMillis(), false);
+        Assertions.assertTrue(original.preApplyResources());
+        persistPreAppliedSlots(original);
+
+        SubPlan pipeline = original.getPhysicalPlan().getPipelineList().get(0);
+        TaskGroupLocation finished = pipeline.getPhysicalVertexList().get(0).getTaskGroupLocation();
+        IMap<PipelineLocation, Map<TaskGroupLocation, SlotProfile>> ownedSlots =
+                nodeEngine.getHazelcastInstance().getMap("ownedSlotProfilesIMap");
+        Map<TaskGroupLocation, SlotProfile> runningSlots =
+                ownedSlots.get(pipeline.getPipelineLocation());
+        SlotProfile finishedSlot = runningSlots.remove(finished);
+        ownedSlots.set(pipeline.getPipelineLocation(), runningSlots);
+        IMap<Object, Object> states = nodeEngine.getHazelcastInstance().getMap("runningJobState");
+        states.set(jobId, JobStatus.RUNNING);
+        states.set(pipeline.getPipelineLocation(), PipelineStatus.RUNNING);
+        runningSlots.keySet().forEach(location -> states.set(location, ExecutionState.RUNNING));
+        states.set(finished, ExecutionState.FINISHED);
+        resourceManager.releaseResource(jobId, finishedSlot).join();
+
+        List<SlotProfile> blockerSlots = occupyRemainingSlots(resourceManager, jobId + 1);
+        try {
+            JobMaster restored = newJobMaster(jobId, jobData);
+            restored.init(System.currentTimeMillis(), true);
+
+            Assertions.assertTrue(
+                    restored.preApplyResources(),
+                    "The finished task group must not prevent reusing the still-owned slots");
+            var futures = restored.getPhysicalPlan().getPreApplyResourceFutures();
+            Assertions.assertEquals(runningSlots.keySet(), futures.keySet());
+            runningSlots.forEach(
+                    (location, slot) ->
+                            Assertions.assertEquals(slot, futures.get(location).join()));
         } finally {
             resourceManager.releaseResources(jobId + 1, blockerSlots).join();
             releasePersistedSlots(resourceManager, original, jobId);

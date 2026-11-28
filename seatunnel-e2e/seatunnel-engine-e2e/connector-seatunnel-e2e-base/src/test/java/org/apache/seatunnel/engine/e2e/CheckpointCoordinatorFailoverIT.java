@@ -658,7 +658,8 @@ public class CheckpointCoordinatorFailoverIT {
      * Closes a drained unbounded reader through the real idle-close checkpoint handshake, then
      * switches dedicated masters while its worker stays alive. A newly completed checkpoint must be
      * persisted after failover; allocating a checkpoint ID alone would miss a timeout caused by
-     * waiting for the finished reader's acknowledgement.
+     * waiting for the finished reader's acknowledgement. The fixed slot released by that reader
+     * must also stay free after failover.
      */
     @Test
     public void testCheckpointCompletesAfterMasterFailoverWithIdleClosedReader() throws Exception {
@@ -674,6 +675,10 @@ public class CheckpointCoordinatorFailoverIT {
         SeaTunnelConfig workerConfig = ConfigProvider.locateAndGetSeaTunnelConfig();
         workerConfig.getHazelcastConfig().setClusterName(clusterName);
         workerConfig.getEngineConfig().getHttpConfig().setEnabled(false);
+        // Two reader/writer groups, an enumerator and a LocalFile committer.
+        int initialSlots = 4;
+        workerConfig.getEngineConfig().getSlotServiceConfig().setDynamicSlot(false);
+        workerConfig.getEngineConfig().getSlotServiceConfig().setSlotNum(initialSlots);
         HazelcastInstanceImpl first = null;
         HazelcastInstanceImpl second = null;
         HazelcastInstanceImpl worker = null;
@@ -730,6 +735,11 @@ public class CheckpointCoordinatorFailoverIT {
                                     .filter(SourceSeaTunnelTask.class::isInstance)
                                     .findFirst()
                                     .get();
+            SeaTunnelServer workerServer =
+                    worker.node.getNodeEngine().getService(SeaTunnelServer.SERVICE_NAME);
+            Assertions.assertEquals(
+                    initialSlots,
+                    workerServer.getSlotService().getWorkerProfile().getAssignedSlots().length);
             jobMaster.getCheckpointManager().readyToCloseIdleTask(source.getTaskLocation());
             Awaitility.await()
                     .atMost(30, TimeUnit.SECONDS)
@@ -738,6 +748,13 @@ public class CheckpointCoordinatorFailoverIT {
                                 Assertions.assertEquals(
                                         ExecutionState.FINISHED, idleReader.getExecutionState());
                                 Assertions.assertEquals(JobStatus.RUNNING, job.getJobStatus());
+                                Assertions.assertEquals(
+                                        initialSlots - 1,
+                                        workerServer
+                                                .getSlotService()
+                                                .getWorkerProfile()
+                                                .getAssignedSlots()
+                                                .length);
                             });
             CompletedCheckpoint checkpointBefore = latestCompletedCheckpoint(first, jobId);
             Assertions.assertNotNull(checkpointBefore);
@@ -763,8 +780,22 @@ public class CheckpointCoordinatorFailoverIT {
                                         "A checkpoint triggered after master shutdown must complete");
                             });
             Assertions.assertEquals(20, FileUtils.getFileLineNumberFromDir(resources.getLeft()));
+            Assertions.assertEquals(
+                    initialSlots - 1,
+                    workerServer.getSlotService().getWorkerProfile().getAssignedSlots().length);
             job.cancelJob();
             Assertions.assertEquals(JobStatus.CANCELED, job.waitForJobComplete());
+            Awaitility.await()
+                    .atMost(30, TimeUnit.SECONDS)
+                    .untilAsserted(
+                            () ->
+                                    Assertions.assertEquals(
+                                            0,
+                                            workerServer
+                                                    .getSlotService()
+                                                    .getWorkerProfile()
+                                                    .getAssignedSlots()
+                                                    .length));
         } finally {
             if (client != null) {
                 client.close();

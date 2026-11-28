@@ -73,6 +73,7 @@ import org.apache.seatunnel.engine.server.dag.physical.PipelineLocation;
 import org.apache.seatunnel.engine.server.dag.physical.PlanUtils;
 import org.apache.seatunnel.engine.server.dag.physical.ResourceUtils;
 import org.apache.seatunnel.engine.server.dag.physical.SubPlan;
+import org.apache.seatunnel.engine.server.execution.ExecutionState;
 import org.apache.seatunnel.engine.server.execution.TaskExecutionState;
 import org.apache.seatunnel.engine.server.execution.TaskGroupLocation;
 import org.apache.seatunnel.engine.server.master.cleanup.JobCleanupRecord;
@@ -546,7 +547,8 @@ public class JobMaster {
         boolean isSubPlan = Objects.nonNull(subPlan);
 
         if (isSubPlan) {
-            preApplyResourcesForSubPlan(subPlan, preApplyResourceFutures, reusedSlotProfiles);
+            preApplyResourcesForSubPlan(
+                    subPlan, preApplyResourceFutures, reusedSlotProfiles, false);
         } else {
             preApplyResourcesForAll(preApplyResourceFutures, reusedSlotProfiles);
         }
@@ -674,7 +676,13 @@ public class JobMaster {
             Map<TaskGroupLocation, CompletableFuture<SlotProfile>> preApplyResourceFutures,
             Set<SlotProfile> reusedSlotProfiles) {
         for (SubPlan subPlan : physicalPlan.getPipelineList()) {
-            preApplyResourcesForSubPlan(subPlan, preApplyResourceFutures, reusedSlotProfiles);
+            // A running pipeline resumes its current attempt after master failover. Finished task
+            // groups are not deployed again unless the pipeline is later restarted.
+            boolean skipFinishedGroups =
+                    masterFailoverRestore
+                            && PipelineStatus.RUNNING.equals(subPlan.getPipelineState());
+            preApplyResourcesForSubPlan(
+                    subPlan, preApplyResourceFutures, reusedSlotProfiles, skipFinishedGroups);
         }
     }
 
@@ -686,14 +694,20 @@ public class JobMaster {
      *     place
      * @param reusedSlotProfiles set collecting slots retained from the previous master; these slots
      *     must not be released when part of the pre-apply operation fails
+     * @param skipFinishedGroups whether groups finished in the current attempt need no slot
      */
     private void preApplyResourcesForSubPlan(
             SubPlan subPlan,
             Map<TaskGroupLocation, CompletableFuture<SlotProfile>> preApplyResourceFutures,
-            Set<SlotProfile> reusedSlotProfiles) {
+            Set<SlotProfile> reusedSlotProfiles,
+            boolean skipFinishedGroups) {
 
         Map<TaskGroupLocation, CompletableFuture<SlotProfile>> coordinatorFutures = new HashMap<>();
-        subPlan.getCoordinatorVertexList()
+        subPlan.getCoordinatorVertexList().stream()
+                .filter(
+                        vertex ->
+                                !skipFinishedGroups
+                                        || vertex.getExecutionState() != ExecutionState.FINISHED)
                 .forEach(
                         coordinator -> {
                             SlotProfile reusableSlot =
@@ -710,7 +724,11 @@ public class JobMaster {
                         });
 
         Map<TaskGroupLocation, CompletableFuture<SlotProfile>> taskFutures = new HashMap<>();
-        subPlan.getPhysicalVertexList()
+        subPlan.getPhysicalVertexList().stream()
+                .filter(
+                        vertex ->
+                                !skipFinishedGroups
+                                        || vertex.getExecutionState() != ExecutionState.FINISHED)
                 .forEach(
                         task -> {
                             SlotProfile reusableSlot = getReusableSlot(task.getTaskGroupLocation());
