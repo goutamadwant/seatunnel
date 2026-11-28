@@ -47,6 +47,10 @@ public final class MultiTableTimerFlushFixture implements AutoCloseable {
     private long rounds;
 
     public MultiTableTimerFlushFixture(int queueCount, long writerFlushMillis) throws IOException {
+        if (queueCount < 1) {
+            throw new IllegalArgumentException(
+                    "queueCount must be positive, but was " + queueCount);
+        }
         if (writerFlushMillis < 0) {
             throw new IllegalArgumentException("writerFlushMillis must be non-negative");
         }

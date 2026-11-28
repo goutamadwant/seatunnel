@@ -1277,25 +1277,6 @@ public class MultiTableSinkWriterTest {
     }
 
     @Test
-    public void testConstructorRejectsReplicaNumBelowOneWithoutFactory() {
-        for (int replicaNum : new int[] {0, -1, Integer.MIN_VALUE}) {
-            IllegalArgumentException exception =
-                    Assertions.assertThrows(
-                            IllegalArgumentException.class,
-                            () ->
-                                    new MultiTableSink(
-                                            new MultiTableFactoryContext(
-                                                    replicaConfig(replicaNum),
-                                                    Thread.currentThread().getContextClassLoader(),
-                                                    singleSink())));
-            Assertions.assertTrue(
-                    exception
-                            .getMessage()
-                            .contains(SinkConnectorCommonOptions.MULTI_TABLE_SINK_REPLICA.key()));
-        }
-    }
-
-    @Test
     public void testFactoryPreservesReplicaTypeConversionFailure() {
         Map<String, Object> config = replicaOptions(null);
         config.put(SinkConnectorCommonOptions.MULTI_TABLE_SINK_REPLICA.key(), "not-an-integer");

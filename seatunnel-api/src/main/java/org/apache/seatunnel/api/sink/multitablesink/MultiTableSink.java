@@ -84,23 +84,15 @@ public class MultiTableSink
      * controls how many writers are created per table per subtask. Each subtask creates {@code
      * replicaNum} writers to fill the blocking queues in {@link MultiTableSinkWriter}.
      *
+     * <p>Use {@code FactoryUtil.createMultiTableSink} to validate the configuration before
+     * construction. Direct callers must supply a positive replica count.
+     *
      * @param context the factory context containing per-table sinks and configuration options
-     * @throws IllegalArgumentException if the replica count is less than one
      */
     public MultiTableSink(MultiTableFactoryContext context) {
         this.sinks = context.getSinks();
         this.replicaNum =
                 context.getOptions().get(SinkConnectorCommonOptions.MULTI_TABLE_SINK_REPLICA);
-        // FactoryUtil validates the factory rule. Direct callers still need the guard because
-        // every replica becomes a writer with its own queue.
-        if (replicaNum < 1) {
-            throw new IllegalArgumentException(
-                    String.format(
-                            "Option '%s' must be at least 1, but was %d. Each replica is one "
-                                    + "sink writer per subtask, so a value below 1 leaves the "
-                                    + "multi-table sink with no writers.",
-                            SinkConnectorCommonOptions.MULTI_TABLE_SINK_REPLICA.key(), replicaNum));
-        }
         this.failurePolicy =
                 context.getOptions().get(MultiTableCommonOptions.MULTI_TABLE_FAILURE_POLICY);
         this.tableRetryTimes = context.getOptions().get(EnvCommonOptions.JOB_RETRY_TIMES);

@@ -33,6 +33,26 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class MultiTableSinkFixtureTest {
 
     @Test
+    void shouldRejectNonpositiveTimerFlushQueueCount() {
+        for (int queueCount : new int[] {0, -1}) {
+            IllegalArgumentException failure =
+                    assertThrows(
+                            IllegalArgumentException.class,
+                            () -> new MultiTableTimerFlushFixture(queueCount, 0));
+            assertEquals(
+                    "queueCount must be positive, but was " + queueCount, failure.getMessage());
+        }
+    }
+
+    @Test
+    void shouldFlushWithOneQueue() throws Exception {
+        try (MultiTableTimerFlushFixture fixture = new MultiTableTimerFlushFixture(1, 0)) {
+            fixture.flush();
+            fixture.verifyRound();
+        }
+    }
+
+    @Test
     void shouldRejectDuplicateRowsEvenWhenTheRollingChecksumMatches() throws Exception {
         MultiTableSinkFixture fixture = fixture(1, 1, MultiTableSinkFixture.Routing.HASH, 1000, 0);
         fixture.setUp();
